@@ -34,9 +34,39 @@ test-coverage:
 	go test -race -coverprofile=coverage.out .
 	go tool cover -html=coverage.out -o coverage.html
 
+# Single-process shuffled run of the public-API suites (tests, tests/compat,
+# stream). scripts/cmd/alltests (a nested module whose go.mod replaces
+# github.com/velox-io/json with the repo root) merges them into one synthetic
+# package under its testdata/alltests, then go test runs every suite's tests
+# in ONE process in a randomized order (and -race). Unlike `make test`, where
+# each package runs in its own process with pristine global state, here every
+# suite shares the process-global resources (type compiler, arenas, caches)
+# with every other suite, so cross-module interference and order dependence
+# surface. The shuffle seed is printed on failure (or with go test -v).
+#
+# Usage:
+#   make test-shuffle                     # 1 round, count=1, -race
+#   make test-shuffle SHUFFLE_ROUNDS=10   # 10 rounds, fresh random order each
+#   make test-shuffle SHUFFLE_COUNT=5     # rerun every test 5x within each round
+#   make test-shuffle SHUFFLE_SEED=12345  # reproduce a specific failing order
+#   make test-shuffle SHUFFLE_RACE=       # drop -race (faster sweep)
+SHUFFLE_ROUNDS ?= 1
+SHUFFLE_SEED ?=
+SHUFFLE_COUNT ?= 1
+SHUFFLE_RACE ?= 1
+
+test-shuffle:
+	cd scripts/cmd/alltests && go run .
+	@for i in $$(seq 1 $(SHUFFLE_ROUNDS)); do \
+		go -C scripts/cmd/alltests test -count=$(SHUFFLE_COUNT) $(if $(SHUFFLE_RACE),-race) \
+			$(if $(SHUFFLE_SEED),-shuffle=$(SHUFFLE_SEED),-shuffle=on) \
+			./testdata/alltests/ || exit 1; \
+	done
+
 clean:
 	go clean
 	rm -f coverage.out coverage.html cpu.out mem.out
+	rm -rf scripts/cmd/alltests/testdata
 
 FUZZ_TIME ?= 30s
 FUZZ_PARALLEL ?= 4

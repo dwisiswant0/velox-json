@@ -39,6 +39,16 @@ go test -race -tags vjstackstress ./tests/stackstress/ -count=1
 go test ./tests/compat/ -count=1
 go test -race ./tests/compat/ -count=1
 
+# Single-process shuffled run of the public-API suites (tests, tests/compat,
+# stream): every suite shares the process-global resources (type compiler,
+# arenas, caches) with every other suite, in a randomized order, so
+# cross-module interference and order dependence surface. The generated
+# package lives in the scripts/cmd/alltests nested module (its go.mod
+# replaces github.com/velox-io/json with the repo root). make test-shuffle
+# reruns this with more rounds or a fixed seed.
+(cd scripts/cmd/alltests && go run .)
+go -C scripts/cmd/alltests test -count=1 -race -shuffle=on ./testdata/alltests/
+
 # go test ./ndec/... -count=1
 # go test -race ./ndec/... -count=1
 
