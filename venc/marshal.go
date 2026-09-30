@@ -69,28 +69,47 @@ func WithBufSize(n int) MarshalOption {
 //
 // Pointer T: handled inline; v is 8 bytes, dereference without &v so v
 // stays on the stack (zero allocs).
+// Interface T holding a pointer: unwrapped to the pointer path, so passing
+// a *S through `any` costs the same as passing it typed.
 // Value T:   dispatches to marshalSlow in a separate function so that its
 // &v does not poison the pointer path's escape analysis.
 func Marshal[T any](v T, opts ...MarshalOption) ([]byte, error) {
 	rt := reflect.TypeFor[T]()
-	if rt.Kind() == reflect.Pointer {
+	switch rt.Kind() {
+	case reflect.Pointer:
 		elemPtr := *(*unsafe.Pointer)(unsafe.Pointer(&v))
 		if elemPtr == nil {
 			return []byte("null"), nil
 		}
-
-		es := acquireEncodeState()
-		defer releaseEncodeState(es)
-		for _, o := range opts {
-			o(es)
+		return marshalPtr(uintptr(gort.TypePtr(rt)), rt, elemPtr, opts)
+	case reflect.Interface:
+		var dyn unsafe.Pointer
+		if rt.NumMethod() == 0 {
+			dyn = gort.EfaceRType(unsafe.Pointer(&v))
+		} else {
+			dyn = gort.IfaceConcreteRType(unsafe.Pointer(&v))
 		}
-
-		rtp := uintptr(gort.TypePtr(rt))
-		ti := encElemTypeInfoOf(rtp, rt)
-
-		return es.marshalWith(ti, elemPtr)
+		if dyn != nil {
+			if drt := gort.TypeFromRType(dyn); drt.Kind() == reflect.Pointer {
+				// Pointer-shaped dynamic types are stored directly in the data word.
+				elemPtr := (*gort.GoIface)(unsafe.Pointer(&v)).Data
+				if elemPtr == nil {
+					return []byte("null"), nil
+				}
+				return marshalPtr(uintptr(dyn), drt, elemPtr, opts)
+			}
+		}
 	}
 	return marshalSlow(v, rt, opts)
+}
+
+func marshalPtr(rtp uintptr, rt reflect.Type, elemPtr unsafe.Pointer, opts []MarshalOption) ([]byte, error) {
+	es := acquireEncodeState()
+	defer releaseEncodeState(es)
+	for _, o := range opts {
+		o(es)
+	}
+	return es.marshalWith(encElemTypeInfoOf(rtp, rt), elemPtr)
 }
 
 func marshalSlow[T any](v T, rt reflect.Type, opts []MarshalOption) ([]byte, error) {

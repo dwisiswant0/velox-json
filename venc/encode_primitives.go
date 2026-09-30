@@ -593,6 +593,11 @@ func (es *encodeState) encodeAnyReflect(v any) error {
 
 	ti := EncTypeInfoOf(rv.Type())
 
+	// Reached through a pointer: encode in place. Otherwise the value is not
+	// addressable and must be copied into an addressable slot.
+	if rv.CanAddr() {
+		return ti.Encode(es, rv.Addr().UnsafePointer())
+	}
 	tmp := reflect.New(rv.Type())
 	tmp.Elem().Set(rv)
 	return ti.Encode(es, tmp.UnsafePointer())
