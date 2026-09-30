@@ -555,6 +555,22 @@ enum {
    * was already consumed.
    */
   BIND_PHASE_ROOT_SKIP_RESUME = 50,
+  /*
+   * Resumes a safe skip entered from an array element site: a fixed array's
+   * surplus element or a stopped stream's remainder. Machine skip_depth
+   * carries the nesting. SKIP_RESUME cannot serve these sites because it
+   * re-dispatches on SKIP_LENIENT, and the lenient skip continues an object.
+   */
+  BIND_PHASE_SAFE_SKIP_RESUME = 51,
+  /*
+   * The window ended between an opening '[' or '{' and the first element or
+   * key. The container frame is pushed; re-entry replays the empty-close
+   * decision, and any other byte starts the first element or key. Later
+   * elements and keys resume through phases where a closing bracket is a
+   * trailing-comma error.
+   */
+  BIND_PHASE_ARRAY_FIRST = 52,
+  BIND_PHASE_MAP_FIRST   = 53,
 };
 
 enum {

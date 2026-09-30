@@ -336,6 +336,14 @@ INLINE int bind_write_quoted_scalar(uint8_t **str_pp, const uint8_t *data, uint3
     *(intptr_t *)((dst) + 16) = 0;                                                                                \
   } while (0)
 
+/* Whether p lies in the SlotClass's current bump block. Only a backing there
+ * borrowed the block's tail, so only it may return the unused part at close.
+ * The full-width unsigned difference wraps for addresses below the block, so
+ * a backing from an unrelated allocation can never alias into the range. */
+INLINE int bind_slot_block_owns(const BindSlotClass *sc, const uint8_t *p) {
+  return (uintptr_t)p - (uintptr_t)sc->block < (uintptr_t)sc->limit;
+}
+
 /* Each RecBatch row owns fixed-size backings for one power-of-two capacity.
  * Allocation transfers a bitmap slot to a slice. Growth returns only pointers
  * within the row's current allocation; pointers from retained refill arrays or

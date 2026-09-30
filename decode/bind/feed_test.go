@@ -67,6 +67,8 @@ var feedValidDocs = []string{
 	`{"nested":[{"a":1},{"a":2,"b":"two"},{"a":3,"c":3.5}]}`,
 	`{"a":{"deep":{"deeper":{"deepest":[1,[2,[3]]]}}}}`,
 	`{"ss":["日本語","émoji","\"quoted\"","back\\slash"]}`,
+	`{"q":[],"ss":[],"m":{},"o":{},"arr":[],"nested":[{},{}],"a":[[],{}]}`,
+	`{"arr":[1,2,3,4,[5,{"x":6}],"seven",{"a":[8]}],"i":9}`,
 }
 
 var feedInvalidDocs = []string{
@@ -92,6 +94,15 @@ var feedInvalidDocs = []string{
 	`{"p":[1]}`,
 	`{"o":{"k":[1]}}`,
 	`{"m":{"k":{}}}`,
+	`{"q":[1,]}`,
+	`{"q":[,]}`,
+	`{"m":{"k":1,}}`,
+	`{"m":{,}}`,
+	`{"arr":[1,2,3,4,]}`,
+	`{"unknown_field":[1,]}`,
+	`{"unknown_field":{"a":1,}}`,
+	`{"unknown_field":[1,,2]}`,
+	`{"arr":[1,2,3,[4,]]}`,
 }
 
 var feedChunkSizes = []int{1, 2, 3, 7, 31, 32, 63, 64, 65, 4096}
@@ -366,6 +377,120 @@ func TestFeedStreamHostParity(t *testing.T) {
 		}
 		if len(wantIDs) != 2 || wantIDs[0] != "a" || wantIDs[1] != "b" {
 			t.Fatalf("chunk=%d: contiguous ids=%v", chunk, wantIDs)
+		}
+	}
+}
+
+// feedArrGuard brackets a fixed array with sentinel fields: a surplus element
+// bound past the array end lands in Tail or Pad instead of being skipped.
+type feedArrGuard struct {
+	Arr  [2]int `json:"arr"`
+	Tail int    `json:"tail"`
+	Pad  [4]int `json:"pad"`
+}
+
+// TestFeedFixedArraySurplusSkip splits a fixed array's surplus elements at
+// every offset. A skip interrupted by a window edge must resume as the skip,
+// not as an element bind at the slot past the array end.
+func TestFeedFixedArraySurplusSkip(t *testing.T) {
+	data := []byte(`{"arr":[1,2,3,[4,{"x":5}],6,7,8,9],"tail":-1}`)
+	want := feedArrGuard{Arr: [2]int{1, 2}, Tail: -1}
+	for chunk := 1; chunk <= len(data); chunk++ {
+		got, err := feedRun[feedArrGuard](t, data, chunk)
+		if err != nil || got != want {
+			t.Fatalf("chunk=%d: got %+v err=%v, want %+v", chunk, got, err, want)
+		}
+	}
+}
+
+type feedMapHost struct {
+	M map[string]int `json:"m"`
+}
+
+type feedIntStreamHost struct {
+	Items stream.Stream[int] `json:"items"`
+}
+
+// TestFeedTrailingCommaAtResetBoundary places a trailing comma where the
+// container's staging state looks freshly opened: right after a map region
+// flush (32 entries) and right after a stream batch rotation. Only the phase
+// that follows the opening bracket may accept a closing bracket.
+func TestFeedTrailingCommaAtResetBoundary(t *testing.T) {
+	var mb strings.Builder
+	mb.WriteString(`{"m":{`)
+	for i := 0; i < 64; i++ {
+		fmt.Fprintf(&mb, `"k%d":%d,`, i, i)
+	}
+	mb.WriteString(`}}`)
+	for _, chunk := range feedChunkSizes {
+		if _, err := feedRun[feedMapHost](t, []byte(mb.String()), chunk); err == nil {
+			t.Fatalf("map chunk=%d: trailing comma after region flush accepted", chunk)
+		}
+	}
+
+	for n := 1; n <= 64; n++ {
+		var sb strings.Builder
+		sb.WriteString(`{"items":[`)
+		for i := 0; i < n; i++ {
+			fmt.Fprintf(&sb, `%d,`, i)
+		}
+		sb.WriteString(`]}`)
+		for _, chunk := range []int{1, 7, 4096} {
+			p, err := NewParser[feedIntStreamHost]()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var h feedIntStreamHost
+			h.Items.OnRead(func(s stream.Scope[int]) error {
+				for it := range s.Iter() {
+					if err := it.Decode(); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			if err := p.UnmarshalFeed(&chunkReader{data: []byte(sb.String()), chunk: chunk}, &h); err == nil {
+				t.Fatalf("stream n=%d chunk=%d: trailing comma after batch rotation accepted", n, chunk)
+			}
+		}
+	}
+}
+
+// TestFeedEmptyStreamAcrossEdge splits an empty stream between its brackets.
+// The handler activation the open site performs for a visible ']' must also
+// happen when the ']' arrives in a later window.
+func TestFeedEmptyStreamAcrossEdge(t *testing.T) {
+	data := []byte(`{"items":[],"name":"s"}`)
+	run := func(feed bool, chunk int) (int, string) {
+		p, err := NewParser[feedStreamHost]()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var h feedStreamHost
+		calls := 0
+		h.Items.OnRead(func(s stream.Scope[feedStreamElem]) error {
+			calls++
+			for it := range s.Iter() {
+				if derr := it.Decode(); derr != nil {
+					return derr
+				}
+			}
+			return nil
+		})
+		if feed {
+			err = p.UnmarshalFeed(&chunkReader{data: data, chunk: chunk}, &h)
+		} else {
+			err = p.Unmarshal(data, &h)
+		}
+		if err != nil {
+			t.Fatalf("feed=%v chunk=%d: %v", feed, chunk, err)
+		}
+		return calls, h.Name
+	}
+	wantCalls, wantName := run(false, 0)
+	for chunk := 1; chunk <= len(data); chunk++ {
+		if calls, name := run(true, chunk); calls != wantCalls || name != wantName {
+			t.Fatalf("chunk=%d: calls=%d name=%q, contiguous calls=%d name=%q", chunk, calls, name, wantCalls, wantName)
 		}
 	}
 }

@@ -344,11 +344,11 @@ NOINLINE static void ndec_bind_parse_inner(NdecBindMachine *m) {
   case BIND_PHASE_ARRAY_VALUE_BEGIN:
     /* A stream handler may set STREAM_SKIP while this element yield is serviced.
      * Check it only on this resume edge before entering the unconsumed element.
-     * The skip must resume through this same edge: entering it before arming the
-     * phase would make a window-edge input yield inside the skip save the root
-     * phase and re-dispatch document_start with a mid-parse cur_type. */
+     * The skip arms its own phase first: without it, a window-edge input yield
+     * inside the skip would save the root phase and re-dispatch document_start
+     * with a mid-parse cur_type. */
     if (UNLIKELY(cur_type.flags & BIND_FLAG_STREAM_SKIP)) {
-      NDEC_SET_INPUT_PHASE(BIND_PHASE_ARRAY_VALUE_BEGIN);
+      NDEC_SET_INPUT_PHASE(BIND_PHASE_SAFE_SKIP_RESUME);
       goto safe_skip_value;
     }
     NDEC_SET_INPUT_PHASE(BIND_PHASE_ARRAY_VALUE_BEGIN);
@@ -437,6 +437,17 @@ NOINLINE static void ndec_bind_parse_inner(NdecBindMachine *m) {
   case BIND_PHASE_ROOT_SKIP_RESUME:
     /* root_skip_value restores its bracket depth the same way. */
     goto root_skip_value;
+#if NDEC_STREAM_MODE
+  case BIND_PHASE_SAFE_SKIP_RESUME:
+    /* An array element site's skip. Re-entry through the element edge would
+     * bind the skipped value as an element instead. */
+    NDEC_SET_INPUT_PHASE(BIND_PHASE_SAFE_SKIP_RESUME);
+    goto safe_skip_value;
+  case BIND_PHASE_ARRAY_FIRST:
+    goto array_first;
+  case BIND_PHASE_MAP_FIRST:
+    goto map_first;
+#endif
   case BIND_PHASE_DEFERRED_RAW_RESUME:
     /* deferred_raw_scan restores the block-local bracket depth from
      * m->raw_depth. The scan may stop at a window edge again, so the phase is
@@ -1184,11 +1195,39 @@ phase2_done: {
   goto json_parent_continue;
 }
 
+#if NDEC_STREAM_MODE
+/* Streaming resume after the window ended between '[' and the first element.
+ * A leading ']' completes the open site's empty close: a stream activates its
+ * handler with an empty batch, a slice publishes the empty header, and a
+ * fixed array keeps its contents. */
+array_first:
+  if (SRC_PEEK() == ']') {
+    SRC_ADVANCE();
+    if (cur_type.kind == BIND_KIND_STREAM) {
+      BIND_YIELD(m, BIND_YIELD_SLICE_GROW, (uint32_t)cur_type.type_idx, 0, BIND_PHASE_ARRAY_CLOSE);
+    }
+    if (BIND_IS_SLICE_LIKE(cur_type.kind)) BIND_WRITE_EMPTY_SLICE(cur_dst, m, cur_type.type_idx);
+    bind_pop(frames, &depth, &cur_dst, &cur_type, &cur_count, &cur_aux);
+    goto json_value_done;
+  }
+  goto array_begin;
+#endif
+
 /* Existing slices use caller-owned backing. Streams use Go-managed batch
  * backing. New slices use allocator backing, and fixed arrays use inline storage.
  * Bump slices charge the borrowed tail immediately and return unused capacity at
  * close. */
 array_begin: {
+#if NDEC_STREAM_MODE
+  /* Every open site enters here right after its '[' with the frame pushed.
+   * Its empty fast path answers ']' only when the byte is visible, so a
+   * window edge here defers that decision to array_first. Yielding before any
+   * backing is borrowed keeps the replay free of allocator state. */
+  if (UNLIKELY(SRC_EOF()) && !m->window_final) {
+    NDEC_SET_INPUT_PHASE(BIND_PHASE_ARRAY_FIRST);
+    BIND_INPUT_EOF_YIELD(m);
+  }
+#endif
   if (BIND_IS_SLICE_LIKE(cur_type.kind)) {
     __builtin_memcpy(&cur_aux, cur_dst, sizeof(uint8_t *));
     if (cur_aux == NULL) {
@@ -1238,12 +1277,14 @@ array_value: {
   } else if (cur_type.kind == BIND_KIND_ARRAY) {
     /* Fixed arrays parse and discard elements beyond their declared length. */
     if (UNLIKELY(cur_count >= m->b.ctx.type_meta[cur_type.type_idx].u.array.array_len)) {
+      NDEC_SET_INPUT_PHASE(BIND_PHASE_SAFE_SKIP_RESUME);
       goto safe_skip_value;
     }
   } else {
     BIND_SLICE_GROW_CHECK(m, cur_type, cur_dst, cur_aux, cur_count);
     /* STREAM_SKIP drains remaining elements after a handler stops. */
     if (UNLIKELY(cur_type.flags & BIND_FLAG_STREAM_SKIP)) {
+      NDEC_SET_INPUT_PHASE(BIND_PHASE_SAFE_SKIP_RESUME);
       goto safe_skip_value;
     }
     /* Before binding an element that contains a nested stream, yield with
@@ -1259,13 +1300,6 @@ array_value: {
    * STREAM_SKIP. A non-final window end yields before cur_count and cur_aux
    * advance, so the element slot is committed exactly once across the yield. */
 array_value_bind_body: {
-  /* The empty-close check at the opening site spans a window boundary: a
-   * leading ']' arriving in a later window closes the empty array. array_close
-   * returns any charged bump tail exactly like the ordinary close. */
-  if (NDEC_STREAM_MODE && SRC_PEEK() == ']' && cur_count == 0) {
-    SRC_ADVANCE();
-    goto array_close;
-  }
   BIND_INPUT_PHASE_EXPECT(BIND_PHASE_ARRAY_VALUE_BEGIN);
   BIND_INPUT_EOF_CHECK(m);
   uint8_t *body              = cur_aux;
@@ -1362,8 +1396,7 @@ array_continue: {
         /* Return the unused bump tail from the next-write cursor. */
         const uint8_t *data;
         __builtin_memcpy(&data, cur_dst, sizeof(data));
-        uint32_t off = (uint32_t)(data - sc->block);
-        if (off < sc->limit) {
+        if (bind_slot_block_owns(sc, data)) {
           sc->offset = (uint32_t)((uint8_t *)cur_aux - sc->block);
           sc->len += cur_count;
         }
@@ -1458,8 +1491,30 @@ map_open: {
     if (depth == 0) goto document_end;
     goto json_parent_continue;
   }
+#if NDEC_STREAM_MODE
+  /* The empty fast path above answers '}' only when the byte is visible, so a
+   * window edge here defers that decision to map_first. */
+  if (UNLIKELY(SRC_EOF()) && !m->window_final) {
+    NDEC_SET_INPUT_PHASE(BIND_PHASE_MAP_FIRST);
+    BIND_INPUT_EOF_YIELD(m);
+  }
+#endif
   goto map_key;
 }
+
+#if NDEC_STREAM_MODE
+/* Streaming resume after the window ended between '{' and the first key. The
+ * map frame is authoritative for the region, as in map_continue_resume. */
+map_first:
+  cur_aux = frames[depth].u.map_region;
+  if (SRC_PEEK() == '}') {
+    SRC_ADVANCE();
+    frames[depth].u.map_region = (BindMapRegionHeader *)0;
+    bind_pop(frames, &depth, &cur_dst, &cur_type, &cur_count, &cur_aux);
+    goto json_value_done;
+  }
+  goto map_key;
+#endif
 
 /* A map region stores [16-byte string key | value] entries at stride intervals,
  * BIND_MAP_REGION_SLOTS entries per region.
@@ -1467,18 +1522,6 @@ map_open: {
  * value subtree completes, so drain never publishes an in-progress entry. */
 map_key: {
   NDEC_SET_INPUT_PHASE(BIND_PHASE_MAP_CONTINUE);
-  /* The empty-close check at map_open spans a window boundary: a leading '}'
-   * arriving in a later window retires the still-empty region. */
-  if (NDEC_STREAM_MODE && SRC_PEEK() == '}') {
-    BindMapRegionHeader *_mr = (BindMapRegionHeader *)cur_aux;
-    if (_mr->entry_count == 0 && _mr->next_entry_off == 0) {
-      SRC_ADVANCE();
-      frames[depth].u.map_region = (BindMapRegionHeader *)0;
-      bind_pop(frames, &depth, &cur_dst, &cur_type, &cur_count, &cur_aux);
-      if (depth == 0) goto document_end;
-      goto json_parent_continue;
-    }
-  }
   BindMapRegionHeader *map_region = (BindMapRegionHeader *)cur_aux;
   uint32_t next_entry_off         = map_region->next_entry_off;
   uint32_t stride                 = map_region->stride;
@@ -1812,9 +1855,9 @@ safe_skip_value: {
     goto safe_skip_loop;
   }
   if (UNLIKELY(SRC_EOF())) {
-    /* ARRAY_VALUE_BEGIN also arms this region: a stream handler's skip enters
-     * through the array begin edge so its resume rechecks STREAM_SKIP. */
-    BIND_INPUT_PHASE_EXPECT2(BIND_PHASE_SKIP_RESUME, BIND_PHASE_ARRAY_VALUE_BEGIN);
+    /* skip_value arms SKIP_RESUME; array element sites arm SAFE_SKIP_RESUME
+     * because the lenient dispatch behind SKIP_RESUME continues an object. */
+    BIND_INPUT_PHASE_EXPECT2(BIND_PHASE_SKIP_RESUME, BIND_PHASE_SAFE_SKIP_RESUME);
     BIND_INPUT_EOF_CHECK(m);
     BIND_YIELD_ERR(m, BIND_ERR_EOF, SRC_POS());
   }
@@ -1848,7 +1891,7 @@ safe_skip_value: {
   safe_skip_loop:
     if (UNLIKELY(SRC_EOF())) {
       if (NDEC_STREAM_MODE && !m->window_final) {
-        BIND_INPUT_PHASE_EXPECT2(BIND_PHASE_SKIP_RESUME, BIND_PHASE_ARRAY_VALUE_BEGIN);
+        BIND_INPUT_PHASE_EXPECT2(BIND_PHASE_SKIP_RESUME, BIND_PHASE_SAFE_SKIP_RESUME);
         m->skip_depth = skip_depth;
         BIND_INPUT_EOF_YIELD(m);
       }
@@ -1864,7 +1907,10 @@ safe_skip_value: {
     } else if (ch == ',') {
       if (UNLIKELY(SRC_EOF())) {
         if (NDEC_STREAM_MODE && !m->window_final) {
-          BIND_INPUT_PHASE_EXPECT2(BIND_PHASE_SKIP_RESUME, BIND_PHASE_ARRAY_VALUE_BEGIN);
+          BIND_INPUT_PHASE_EXPECT2(BIND_PHASE_SKIP_RESUME, BIND_PHASE_SAFE_SKIP_RESUME);
+          /* Leave the comma unconsumed: the resumed loop re-reads it together
+           * with its successor, so the successor check below still runs. */
+          cursor.idx--;
           m->skip_depth = skip_depth;
           BIND_INPUT_EOF_YIELD(m);
         }
@@ -3145,8 +3191,7 @@ t_array_continue: {
          * SlotClass offset or length. */
         const uint8_t *data;
         __builtin_memcpy(&data, cur_dst, sizeof(data));
-        uint32_t off = (uint32_t)(data - sc->block);
-        if (off < sc->limit) {
+        if (bind_slot_block_owns(sc, data)) {
           sc->offset = (uint32_t)((uint8_t *)cur_aux - sc->block);
           sc->len += cur_count;
         }
