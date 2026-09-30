@@ -123,7 +123,31 @@ type Allocator struct {
 	// outgrew its backing. Release harvests each final length into the
 	// class LenHint. Only a few classes outgrow per parse, so lookup scans.
 	growWatch []growWatch
+
+	// loose lists the standalone backings this parse allocated past the block
+	// ceiling. Identity against this list proves a backing is allocator-owned,
+	// so a grow off it may recycle it; caller-owned backings never match.
+	// Release hands the survivors to the user and forgets them.
+	loose []looseBacking
+
+	// spares holds zeroed standalone backings no slice references. They
+	// persist across parses so a stable document shape stops allocating the
+	// intermediate steps of its doubling chains. spareBytes bounds them.
+	spares     []looseBacking
+	spareBytes int
 }
+
+// looseBacking is a standalone typed array of cap elements of class sc.
+type looseBacking struct {
+	sc   *SlotClass
+	data unsafe.Pointer
+	cap  int
+}
+
+// spareMaxBytes bounds the zeroed backings a pooled Allocator keeps. Footprint
+// charges them, so a parser holding many spares leaves the hot slot for
+// sync.Pool, where GC may reclaim it.
+const spareMaxBytes = 1 << 20
 
 // growWatch snapshots a slice header for harvest at Release. The data and cap
 // snapshot validate the read: a header relocated by a parent grow still holds
@@ -325,6 +349,12 @@ func (a *Allocator) Release() {
 
 	if len(a.growWatch) != 0 {
 		a.harvestGrowHints()
+	}
+
+	// Surviving standalone backings now belong to published values.
+	if len(a.loose) != 0 {
+		clear(a.loose)
+		a.loose = a.loose[:0]
 	}
 
 	if len(a.mapSweep) != 0 {
@@ -565,19 +595,23 @@ func (a *Allocator) ServeSliceGrow(sc *SlotClass, hdr *gort.SliceHeader) error {
 	}
 
 	if needCap > a.slotBatchMax {
-		data := gort.UnsafeNewArray(sc.RType, int(needCap))
-		a.retained = append(a.retained, data)
-		if hdr.Data == nil {
-			hdr.Data = data
-			hdr.Cap = int(needCap)
-			hdr.Len = 0
-		} else {
-			if hdr.Len > 0 {
-				gort.Memmove(data, hdr.Data, uintptr(hdr.Len)*uintptr(sc.ElemSize))
-			}
-			hdr.Data = data
-			hdr.Cap = int(needCap)
+		data, dataCap := a.takeSpare(sc, int(needCap))
+		if data == nil {
+			data, dataCap = gort.UnsafeNewArray(sc.RType, int(needCap)), int(needCap)
 		}
+		// Native stores into a reused spare bypass write barriers exactly as
+		// into a fresh array, so both are staged for the barriered release.
+		a.retained = append(a.retained, data)
+		old, oldCap := hdr.Data, hdr.Cap
+		if hdr.Data == nil {
+			hdr.Len = 0
+		} else if hdr.Len > 0 {
+			gort.Memmove(data, hdr.Data, uintptr(hdr.Len)*uintptr(sc.ElemSize))
+		}
+		hdr.Data = data
+		hdr.Cap = dataCap
+		a.retireLoose(sc, old, oldCap)
+		a.loose = append(a.loose, looseBacking{sc: sc, data: data, cap: dataCap})
 		return nil
 	}
 
@@ -613,6 +647,57 @@ func (a *Allocator) ServeSliceGrow(sc *SlotClass, hdr *gort.SliceHeader) error {
 		hdr.Cap = int(blockCap)
 	}
 	return nil
+}
+
+// takeSpare removes and returns the smallest spare of sc holding at least n
+// elements, or nil when none fits.
+func (a *Allocator) takeSpare(sc *SlotClass, n int) (unsafe.Pointer, int) {
+	best := -1
+	for i := range a.spares {
+		s := &a.spares[i]
+		if s.sc == sc && s.cap >= n && (best < 0 || s.cap < a.spares[best].cap) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return nil, 0
+	}
+	s := a.spares[best]
+	last := len(a.spares) - 1
+	a.spares[best] = a.spares[last]
+	a.spares[last] = looseBacking{}
+	a.spares = a.spares[:last]
+	a.spareBytes -= s.cap * int(sc.ElemSize)
+	return s.data, s.cap
+}
+
+// retireLoose recycles data after its only slice moved off it. A grow is the
+// sole event that abandons a standalone backing: the copy leaves no element
+// behind, deferred records were flushed before the grow yield, and a closed
+// map region keeps its hmap rather than its parent slot. Clearing through the
+// pointer-aware path both zeroes the array for its next slice and drops its
+// stale pointers from GC tracing.
+func (a *Allocator) retireLoose(sc *SlotClass, data unsafe.Pointer, n int) {
+	if data == nil {
+		return
+	}
+	for i := range a.loose {
+		if a.loose[i].data != data {
+			continue
+		}
+		last := len(a.loose) - 1
+		a.loose[i] = a.loose[last]
+		a.loose[last] = looseBacking{}
+		a.loose = a.loose[:last]
+		bytes := n * int(sc.ElemSize)
+		if a.spareBytes+bytes > spareMaxBytes {
+			return
+		}
+		gort.MemclrHasPointers(data, uintptr(bytes))
+		a.spares = append(a.spares, looseBacking{sc: sc, data: data, cap: n})
+		a.spareBytes += bytes
+		return
+	}
 }
 
 // EnsureStrArena preserves its monotonic cursor across parses. Published Value
@@ -738,7 +823,7 @@ func (a *Allocator) TapeHighWater() int { return a.tapeHighWater }
 // backings use fixed geometry, while oversized standalone arrays leave with
 // retained at Release.
 func (a *Allocator) Footprint() int {
-	return cap(a.StrArena) + cap(a.TapeArena)*8 + cap(a.MapBuf) + cap(a.DeferredDrain)
+	return cap(a.StrArena) + cap(a.TapeArena)*8 + cap(a.MapBuf) + cap(a.DeferredDrain) + a.spareBytes
 }
 
 // NoteTapeBound records the largest completed native scan bound. The bound is

@@ -820,3 +820,69 @@ func TestServeSliceGrowSiblingsClearHint(t *testing.T) {
 		t.Errorf("LenHint = %d, want 0 (siblings share the class)", sc.LenHint)
 	}
 }
+
+// A standalone backing abandoned by a doubling grow is zeroed and serves the
+// next standalone grow of its class, in the same parse or a later one.
+func TestServeSliceGrowRecyclesStandalone(t *testing.T) {
+	a := NewAllocator(makeTreeForGrow(t))
+	sc := &a.Slots[0]
+
+	var h gort.SliceHeader
+	for h.Cap <= 2*SlotBatchMax {
+		if err := a.ServeSliceGrow(sc, &h); err != nil {
+			t.Fatalf("grow err: %v", err)
+		}
+		elems := unsafe.Slice((*elemKind)(h.Data), h.Cap)
+		for i := h.Len; i < h.Cap; i++ {
+			elems[i] = elemKind{A: 7, B: 9}
+		}
+		h.Len = h.Cap
+	}
+	if len(a.spares) != 1 || a.spares[0].cap != 2*SlotBatchMax {
+		t.Fatalf("spares = %+v, want one of cap %d", a.spares, 2*SlotBatchMax)
+	}
+	for _, e := range unsafe.Slice((*elemKind)(a.spares[0].data), a.spares[0].cap) {
+		if e != (elemKind{}) {
+			t.Fatal("spare backing not zeroed")
+		}
+	}
+	a.Release()
+	if len(a.loose) != 0 {
+		t.Fatal("Release must forget published standalone backings")
+	}
+
+	// Isolate recycling from the length prediction the first parse trained.
+	sc.LenHint = 0
+	spare := a.spares[0].data
+	var h2 gort.SliceHeader
+	backing := make([]elemKind, SlotBatchMax)
+	h2 = gort.SliceHeader{Data: unsafe.Pointer(&backing[0]), Len: SlotBatchMax, Cap: SlotBatchMax}
+	if err := a.ServeSliceGrow(sc, &h2); err != nil {
+		t.Fatalf("grow err: %v", err)
+	}
+	if h2.Data != spare || h2.Cap != 2*SlotBatchMax {
+		t.Errorf("grow did not reuse the spare: data %p cap %d", h2.Data, h2.Cap)
+	}
+	if len(a.spares) != 0 || a.spareBytes != 0 {
+		t.Errorf("spare not consumed: %d left, %d bytes", len(a.spares), a.spareBytes)
+	}
+}
+
+// A caller-owned backing never becomes a spare: only identity against the
+// allocator's own standalone list licenses recycling.
+func TestServeSliceGrowKeepsCallerBacking(t *testing.T) {
+	a := NewAllocator(makeTreeForGrow(t))
+	sc := &a.Slots[0]
+	backing := make([]elemKind, 2*SlotBatchMax)
+	backing[0] = elemKind{A: 1, B: 2}
+	h := gort.SliceHeader{Data: unsafe.Pointer(&backing[0]), Len: len(backing), Cap: len(backing)}
+	if err := a.ServeSliceGrow(sc, &h); err != nil {
+		t.Fatalf("grow err: %v", err)
+	}
+	if len(a.spares) != 0 {
+		t.Fatal("caller backing recycled")
+	}
+	if backing[0] != (elemKind{A: 1, B: 2}) {
+		t.Fatal("caller backing cleared")
+	}
+}
