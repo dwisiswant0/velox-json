@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"unsafe"
+	"weak"
 
 	"github.com/velox-io/json/gort"
 )
@@ -818,6 +819,65 @@ func TestServeSliceGrowSiblingsClearHint(t *testing.T) {
 	a.Release()
 	if sc.LenHint != 0 {
 		t.Errorf("LenHint = %d, want 0 (siblings share the class)", sc.LenHint)
+	}
+}
+
+// A hint trained on one long slice sizes at most one outgrowing slice per
+// parse. Each short slice of a later document outgrows its backing with
+// Len > 0; handing every one the hinted capacity would pin a hint-sized array
+// per short slice, since close shrinks Cap but not the backing.
+func TestServeSliceGrowHintSizesOneSlice(t *testing.T) {
+	a := NewAllocator(makeTreeForGrow(t))
+	sc := &a.Slots[0]
+	const hint = SlotBatchMax * 8
+	sc.LenHint = hint
+
+	const slices, short = 4, 8
+	hinted, total := 0, 0
+	for range slices {
+		backing := make([]elemKind, short)
+		hdr := gort.SliceHeader{Data: unsafe.Pointer(&backing[0]), Len: short, Cap: short}
+		if err := a.ServeSliceGrow(sc, &hdr); err != nil {
+			t.Fatalf("grow err: %v", err)
+		}
+		if hdr.Cap >= hint {
+			hinted++
+		}
+		total += hdr.Cap
+	}
+	if hinted > 1 {
+		t.Errorf("%d of %d short slices got the hinted cap %d (%d elements for %d live), want at most 1",
+			hinted, slices, hint, total, slices*short)
+	}
+}
+
+// A stream settles each batch through ReleaseScoped, after which the handler
+// may drop it. State the allocator keeps until Release must not root that
+// batch's backings, or a stream pins every batch until the document ends.
+func TestReleaseScopedUnpinsGrownBacking(t *testing.T) {
+	a := NewAllocator(makeTreeForGrow(t))
+	sc := &a.Slots[0]
+	mark := a.RetainMark()
+
+	// A batch element's slice outgrows the block ceiling onto a standalone
+	// backing, the one kind StageLive does not keep alive on its own.
+	hdr := new(gort.SliceHeader)
+	for hdr.Cap <= SlotBatchMax {
+		if err := a.ServeSliceGrow(sc, hdr); err != nil {
+			t.Fatalf("grow err: %v", err)
+		}
+		hdr.Len = hdr.Cap
+	}
+	wp := weak.Make((*elemKind)(hdr.Data))
+
+	a.ReleaseScoped(mark)
+	// The handler drops the batch and the element slot is rebound.
+	*hdr = gort.SliceHeader{}
+	runtime.GC()
+
+	if wp.Value() != nil {
+		t.Errorf("settled batch backing still reachable: growWatch=%d loose=%d entries",
+			len(a.growWatch), len(a.loose))
 	}
 }
 

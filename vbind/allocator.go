@@ -119,15 +119,16 @@ type Allocator struct {
 	// Published Value document tape slices keep displaced backings reachable.
 	TapeArena []uint64
 
-	// growWatch holds, per slot class, the latest slice of this parse that
-	// outgrew its backing. Release harvests each final length into the
-	// class LenHint. Only a few classes outgrow per parse, so lookup scans.
+	// growWatch holds, per slot class, the latest slice that outgrew its
+	// backing since the last release point, which harvests each final length
+	// into the class LenHint. Only a few classes outgrow per window, so
+	// lookup scans.
 	growWatch []growWatch
 
 	// loose lists the standalone backings this parse allocated past the block
 	// ceiling. Identity against this list proves a backing is allocator-owned,
 	// so a grow off it may recycle it; caller-owned backings never match.
-	// Release hands the survivors to the user and forgets them.
+	// Each release point hands the survivors to the user and forgets them.
 	loose []looseBacking
 
 	// spares holds zeroed standalone backings no slice references. They
@@ -347,15 +348,7 @@ func (a *Allocator) Release() {
 	}
 	a.retained = a.retained[:0]
 
-	if len(a.growWatch) != 0 {
-		a.harvestGrowHints()
-	}
-
-	// Surviving standalone backings now belong to published values.
-	if len(a.loose) != 0 {
-		clear(a.loose)
-		a.loose = a.loose[:0]
-	}
+	a.settleGrowth()
 
 	if len(a.mapSweep) != 0 {
 		a.sweepMapSlots()
@@ -380,8 +373,23 @@ func (a *Allocator) Release() {
 	a.StageLive()
 }
 
+// settleGrowth ends the growth observation window at a release point, where
+// the grown slices are published. Harvesting and forgetting them keeps the
+// allocator from rooting published memory, which a stream otherwise pins
+// batch after batch until the document ends.
+func (a *Allocator) settleGrowth() {
+	if len(a.growWatch) != 0 {
+		a.harvestGrowHints()
+	}
+	// Surviving standalone backings now belong to published values.
+	if len(a.loose) != 0 {
+		clear(a.loose)
+		a.loose = a.loose[:0]
+	}
+}
+
 // harvestGrowHints turns each watched header's final length into the next
-// parse's prediction and drops the watch, so no user memory stays pinned.
+// window's prediction and drops the watch, so no user memory stays pinned.
 func (a *Allocator) harvestGrowHints() {
 	for i := range a.growWatch {
 		w := &a.growWatch[i]
@@ -459,6 +467,7 @@ func (a *Allocator) ReleaseScoped(mark int) {
 		a.retained[i] = nil
 	}
 	a.retained = a.retained[:mark]
+	a.settleGrowth()
 	a.StageLive()
 }
 
@@ -586,10 +595,14 @@ func (a *Allocator) ServeSliceGrow(sc *SlotClass, hdr *gort.SliceHeader) error {
 	needCap := uint32(max(hdr.Len*2, int(floor)))
 	// A zero length grow is block exhaustion at array open, shared by every
 	// slice of the class; only a slice outgrowing its backing trains or
-	// consumes the prediction.
+	// consumes the prediction. The hint predicts one slice, so the first
+	// outgrowing slice consumes it and its siblings double as usual.
 	if hdr.Len > 0 {
-		if sc.LenHint > uint32(hdr.Len) {
-			needCap = sc.LenHint
+		if hint := sc.LenHint; hint != 0 {
+			sc.LenHint = 0
+			if hint > uint32(hdr.Len) {
+				needCap = hint
+			}
 		}
 		defer a.watchGrow(sc, hdr)
 	}
