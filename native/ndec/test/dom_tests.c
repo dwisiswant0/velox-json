@@ -1468,8 +1468,11 @@ Test(scan_tape_bound, quotes_even_across_chunk_boundary) {
 }
 
 Test(scan_tape_bound, strict_counted_matches_valid_scan) {
-  const uint8_t json[] = "{\"key\":\"世界\",\"n\":1}";
-  const size_t len     = sizeof(json) - 1;
+  const uint8_t src[] = "{\"key\":\"世界\",\"n\":1}";
+  const size_t len    = sizeof(src) - 1;
+  uint8_t json[len + 64];
+  memcpy(json, src, len);
+  memset(json + len, ' ', 64);
   uint32_t lax_idx[len + 64];
   uint32_t strict_idx[len + 64];
   uint32_t lax_n = 0, strict_n = 0;
@@ -1490,6 +1493,8 @@ Test(scan_tape_bound, strict_counted_rejects_invalid_raw_bytes) {
       {'[', '"', 0xff, '"', ']'},
   };
   const size_t lengths[] = {7, 5};
+  for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); i++)
+    memset(cases[i] + lengths[i], ' ', 64);
 
   for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
     uint32_t idx[144];
@@ -1499,7 +1504,8 @@ Test(scan_tape_bound, strict_counted_rejects_invalid_raw_bytes) {
     cr_assert_neq(ndec_scan_structurals_strict_counted(cases[i], lengths[i], idx, &n_idx, 144, &pop), 0);
   }
 
-  uint8_t boundary[72];
+  uint8_t boundary[67 + 64];
+  memset(boundary, ' ', sizeof(boundary));
   boundary[0] = '[';
   boundary[1] = '"';
   memset(boundary + 2, 'a', 61);

@@ -163,14 +163,10 @@ func (p *Parser) unmarshalValue(v value.Value, desc *valueabi.Descriptor, rootDs
 	m := (*ndec.BindMachine)(unsafe.Pointer(unsafe.SliceData(p.machine)))
 
 	// RootDst is the caller's output. Src preserves the input document's source
-	// coordinate space for nested Value descriptors.
-	m.Ctx = p.ctxTemplate
-	m.Ctx.OptFlags |= p.optFlags
-	m.Ctx.Src = (*byte)(unsafe.SliceData(doc.Src)) // Borrowed for the native walk.
-	m.Ctx.SrcLen = uint64(len(doc.Src))
-	m.Ctx.RootDst = rootDst // Borrowed for the native walk.
-	// RootViewMode selects the logical seam view for shared merged-tape words.
-	m.Ctx.RootViewMode = uint32(desc.Mode)
+	// coordinate space for nested Value descriptors; both are borrowed for the
+	// native walk. The view mode selects the logical seam view for shared
+	// merged-tape words.
+	p.setCallCtx(m, unsafe.SliceData(doc.Src), uint64(len(doc.Src)), rootDst, 0, uint32(desc.Mode))
 
 	allocABI := &m.Alloc
 
@@ -253,8 +249,7 @@ func (p *Parser) unmarshalValue(v value.Value, desc *valueabi.Descriptor, rootDs
 
 	// Reset the deferred and map staging cursors. Slot-class bump cursors retain
 	// their reusable arena positions across calls.
-	syncDeferredDrain(p.alloc, allocABI)
-	syncMapBuf(p.alloc, allocABI)
+	resetDrainCursors(allocABI)
 
 	// Route the machine at the cold-start seed phase.
 	m.Core.Phase = ndec.BindPhaseTapeBindRoot
@@ -281,7 +276,7 @@ func (p *Parser) unmarshalValue(v value.Value, desc *valueabi.Descriptor, rootDs
 		runtime.KeepAlive(strArena)
 	}()
 
-	if err := p.driveBind(m, func() bool { return false }); err != nil {
+	if err := p.driveRoot(m); err != nil {
 		return err
 	}
 	// Publish the tape produced for nested Values with the string and

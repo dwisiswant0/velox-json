@@ -32,43 +32,64 @@ func WithStrictScan() UnmarshalOption { return option.WithStrictScan() }
 
 func WithZeroCopy(enabled bool) UnmarshalOption { return option.WithZeroCopy(enabled) }
 
-// applyOpts translates opts into the C-side opt flag bits and returns the
-// resolved config so each entry can enforce its input-model gate. The zero-copy
-// bit is entry-resolved: resolveZeroCopy arms it for contiguous drives, and
-// every other drive stays copying.
-func applyOpts(p *Parser, opts []UnmarshalOption) option.Config {
-	cfg := option.Apply(opts)
-	p.optFlags = 0
+// optFlagsOf translates cfg into the C-side opt flag bits every input model
+// shares. The zero-copy bit depends on the input model and is left to the
+// entry.
+func optFlagsOf(cfg option.Config) uint32 {
+	var flags uint32
 	if cfg.UseNumber {
-		p.optFlags |= ndec.BindOptUseNumber
+		flags |= ndec.BindOptUseNumber
 	}
 	if cfg.DisallowUnknown {
-		p.optFlags |= ndec.BindOptDisallowUnknown
+		flags |= ndec.BindOptDisallowUnknown
 	}
 	if cfg.StrictScan {
-		p.optFlags |= ndec.BindOptStrictScan
+		flags |= ndec.BindOptStrictScan
 	}
 	if cfg.SkipLenient {
-		p.optFlags |= ndec.BindOptSkipLenient
+		flags |= ndec.BindOptSkipLenient
 	}
+	return flags
+}
+
+// applyOpts sets p.optFlags for a drive whose input cannot be aliased, and
+// returns the resolved config so the entry can reject a zero-copy demand.
+func applyOpts(p *Parser, opts []UnmarshalOption) option.Config {
+	cfg := option.Apply(opts)
+	p.optFlags = optFlagsOf(cfg)
 	return cfg
 }
 
-// resolveZeroCopy maps the caller's string-backing choice onto a contiguous drive,
-// whose input is caller bytes and therefore aliasable. The default aliases escape-free
-// strings into that input. TypeTree carrying value.Value or poly fields keep the copying
-// parse under the default, because their content flows through the tape machinery and
-// stays arena-backed. An explicit demand on those typetree is rejected instead of silently downgraded.
-func resolveZeroCopy(p *Parser, cfg option.Config) error {
-	if p.tt.HasValueField || p.tt.HasPolyField {
+// contiguousOptFlags resolves cfg for a drive over caller-owned bytes, which
+// zero-copy strings may alias. The default aliases, except on trees carrying
+// value.Value or poly fields: their strings flow through the tape and stay
+// arena-backed, so an explicit demand there is rejected rather than downgraded.
+func contiguousOptFlags(tt *vbind.TypeTree, cfg option.Config) (uint32, error) {
+	flags := optFlagsOf(cfg)
+	if tt.HasValueField || tt.HasPolyField {
 		if cfg.ZeroCopy == option.ZeroCopyOn {
-			return ErrZeroCopyTypedTree
+			return 0, ErrZeroCopyTypedTree
 		}
-		return nil
+		return flags, nil
 	}
 	if cfg.ZeroCopy != option.ZeroCopyOff {
-		p.optFlags |= ndec.BindOptZeroCopyStr
+		flags |= ndec.BindOptZeroCopyStr
 	}
+	return flags, nil
+}
+
+// resolveContiguousOpts sets p.optFlags for a drive over caller-owned bytes.
+// A call without options takes the shape's precomputed default.
+func resolveContiguousOpts(p *Parser, opts []UnmarshalOption) error {
+	if len(opts) == 0 {
+		p.optFlags = p.defaultOptFlags
+		return nil
+	}
+	flags, err := contiguousOptFlags(p.tt, option.Apply(opts))
+	if err != nil {
+		return err
+	}
+	p.optFlags = flags
 	return nil
 }
 
@@ -110,7 +131,7 @@ func Unmarshal[T any](data []byte, v T, opts ...UnmarshalOption) error {
 	}
 	p := getParser(sh)
 	defer putParser(sh, p)
-	if err := resolveZeroCopy(p, applyOpts(p, opts)); err != nil {
+	if err := resolveContiguousOpts(p, opts); err != nil {
 		return err
 	}
 	return p.unmarshal(data, ptr)
@@ -183,7 +204,7 @@ func UnmarshalPadded[T any](paddedData []byte, v T, opts ...UnmarshalOption) err
 	}
 	p := getParser(sh)
 	defer putParser(sh, p)
-	if err := resolveZeroCopy(p, applyOpts(p, opts)); err != nil {
+	if err := resolveContiguousOpts(p, opts); err != nil {
 		return err
 	}
 	return p.unmarshalPadded(paddedData, ptr, nil)
@@ -191,15 +212,29 @@ func UnmarshalPadded[T any](paddedData []byte, v T, opts ...UnmarshalOption) err
 
 // shape is the immutable binding plan and parser pool for one Go root type.
 type shape struct {
-	tt          *vbind.TypeTree
+	tt *vbind.TypeTree
+	// ctxTemplate holds the shape fields of BindContext, installed once into
+	// each parser's machine. Its per-call fields stay zero.
 	ctxTemplate ndec.BindContext
+
+	// defaultOptFlags is contiguousOptFlags over the zero Config, the flag set
+	// of a contiguous drive called without options.
+	defaultOptFlags uint32
 
 	// rtp keys this shape's parsers in parserReserve. Held here because Put
 	// sites have the shape but not the reflect.Type it was built from.
 	rtp uintptr
 
-	// inFlight distinguishes reserve-eligible surplus from the pool's sole parser.
+	// inFlight counts parsers borrowed from parserPool, distinguishing
+	// reserve-eligible surplus from the pool's sole parser. A hot slot borrow
+	// bypasses the pool and stays uncounted.
 	inFlight atomic.Int32
+
+	// hot parks one parser outside sync.Pool, so a serial caller borrows and
+	// returns it with one swap and one CAS instead of a pool pin and the
+	// inFlight pair. The slot roots its parser for the shape's lifetime, so
+	// hotParserMax admits only small-document scratch.
+	hot atomic.Pointer[Parser]
 
 	parserPool sync.Pool // *Parser
 }
@@ -215,7 +250,11 @@ type Parser struct {
 	atofBuf    []byte // atof_ctx storage
 	structural []uint32
 	padBuf     []byte
-	optFlags   uint32 // per-call BIND_OPT_* bits; OR'd into Ctx.OptFlags per call
+	optFlags   uint32 // BIND_OPT_* bits of the current call; setCallCtx installs them
+
+	// counted records that getParser charged this borrow to inFlight, so
+	// putParser releases exactly what was charged.
+	counted bool
 
 	// mapDrain backs drainAllMapSlots. One instance suffices because FLUSH
 	// handling is synchronous and runs no user callbacks, so drains never nest.
@@ -263,13 +302,39 @@ func newParserFromShape(sh *shape) *Parser {
 		machine: make([]byte, ndec.BindMachineSize),
 		atofBuf: make([]byte, ndec.AtofStateSize),
 	}
-	// Slot classes and atof storage live for the Parser's lifetime and never
-	// move, so their addresses can be burned into the bridge here. The hot
-	// path refreshes only the per-call fields.
+	// Slot classes, atof storage, the fixed-size drain staging buffers, and
+	// the shape's context fields are constant for the Parser's lifetime, so
+	// they are burned into the bridge once. Each drive writes only the
+	// per-call fields through setCallCtx.
 	m := (*ndec.BindMachine)(unsafe.Pointer(unsafe.SliceData(p.machine)))
 	m.Alloc.SlotClasses = unsafe.SliceData(p.alloc.Slots)
 	m.Core.Atof = uintptr(unsafe.Pointer(unsafe.SliceData(p.atofBuf)))
+	m.Ctx = sh.ctxTemplate
+	m.Alloc.DeferredDrain = unsafe.SliceData(p.alloc.DeferredDrain)
+	m.Alloc.DeferredDrainCap = uint32(cap(p.alloc.DeferredDrain))
+	m.Alloc.MapBuf = unsafe.SliceData(p.alloc.MapBuf)
+	m.Alloc.MapBufCap = uint32(cap(p.alloc.MapBuf))
 	return p
+}
+
+// setCallCtx writes every per-call BindContext field. Neither Go nor native
+// writes the shape fields after construction, so overwriting the per-call
+// set fully resets the context for the next drive.
+func (p *Parser) setCallCtx(m *ndec.BindMachine, src *byte, srcLen uint64, rootDst unsafe.Pointer,
+	aliasDelta uintptr, viewMode uint32) {
+	m.Ctx.Src = src
+	m.Ctx.SrcLen = srcLen
+	m.Ctx.RootViewMode = viewMode
+	m.Ctx.RootDst = rootDst
+	m.Ctx.OptFlags = p.optFlags
+	m.Ctx.SrcAliasDelta = aliasDelta
+}
+
+// resetDrainCursors empties the deferred and map staging buffers, whose
+// backings are bound once in newParserFromShape.
+func resetDrainCursors(allocABI *ndec.BindAllocator) {
+	allocABI.DeferredDrainUsed = 0
+	allocABI.MapBufUsed = 0
 }
 
 // RefreshAllocatorStats is a test-only hook for the vbind SlotClass stats facility.
@@ -322,7 +387,7 @@ func (p *Parser) Unmarshal(data []byte, dst any, opts ...UnmarshalOption) error 
 	if len(data) == 0 {
 		return jerr.NewSyntaxErrorWrap("vjson: unexpected end of input", 0, io.ErrUnexpectedEOF)
 	}
-	if err := resolveZeroCopy(p, applyOpts(p, opts)); err != nil {
+	if err := resolveContiguousOpts(p, opts); err != nil {
 		return err
 	}
 	return p.unmarshal(data, dstPtr)
@@ -345,7 +410,7 @@ func (p *Parser) UnmarshalPadded(paddedData []byte, dst any, opts ...UnmarshalOp
 	if err := checkPadded(paddedData); err != nil {
 		return err
 	}
-	if err := resolveZeroCopy(p, applyOpts(p, opts)); err != nil {
+	if err := resolveContiguousOpts(p, opts); err != nil {
 		return err
 	}
 	return p.unmarshalPadded(paddedData, dstPtr, nil)
@@ -356,9 +421,24 @@ var shapeCache rtcache.Cache[*shape]
 // parserReserve retains surplus parsers by root type across sync.Pool eviction.
 var parserReserve = rtcache.NewObjPool(parserFootprint, 0, 0)
 
+// hotParserMax bounds the footprint a parser may carry into a shape's hot
+// slot. The slot is a strong root, so a parser that grew on a large document
+// returns to sync.Pool, where GC can still reclaim it. A large parse also
+// amortizes the pool cost the slot would save.
+const hotParserMax = 256 << 10
+
+// hotSlotsDisabled keeps putParser from parking parsers in hot slots. It is a
+// test hook, set together with the reserve, for observing reclamation.
+var hotSlotsDisabled atomic.Bool
+
 // setParserReserveEnabled toggles the resident parser floor and clears it when
-// disabled. It is a test hook for observing parser reclamation.
-func setParserReserveEnabled(on bool) { parserReserve.SetEnabled(on) }
+// disabled. It is a test hook for observing parser reclamation. Hot slots
+// follow it: a disabled slot admits nothing, and the parser it held drains on
+// the next borrow.
+func setParserReserveEnabled(on bool) {
+	hotSlotsDisabled.Store(!on)
+	parserReserve.SetEnabled(on)
+}
 
 // parserFootprint reports the retained bytes of a pooled Parser, for the reserve's
 // admission and budget accounting.
@@ -367,32 +447,54 @@ func parserFootprint(p *Parser) int {
 		p.alloc.Footprint()
 }
 
-// getParser borrows a Parser for this shape and counts it as in flight, so putParser can
-// tell whether the pool has surplus to spare. Callers must pair it with putParser.
+// getParser borrows a Parser for this shape, preferring the hot slot. A pool
+// borrow counts as in flight, so putParser can tell whether the pool has
+// surplus to spare. Callers must pair it with putParser.
 func getParser(sh *shape) *Parser {
 	if bypassParserCache {
 		return sh.parserPool.Get().(*Parser)
 	}
+	if p := sh.hot.Swap(nil); p != nil {
+		p.counted = false
+		return p
+	}
 	sh.inFlight.Add(1)
-	return sh.parserPool.Get().(*Parser)
+	p := sh.parserPool.Get().(*Parser)
+	p.counted = true
+	return p
 }
 
-// putParser reserves p only when another parser for this shape remains in flight.
-// This preserves one parser in the per-shape pool for the fast path.
+// putParser parks p in the hot slot when the slot is empty and p fits
+// hotParserMax. Otherwise p joins the reserve only when another pool parser
+// for this shape remains in flight, which preserves one parser in the pool.
 func putParser(sh *shape, p *Parser) {
 	if bypassParserCache {
 		sh.parserPool.Put(p)
 		return
 	}
-	if sh.inFlight.Add(-1) > 0 && parserReserve.Offer(sh.rtp, p) {
+	var others int32
+	if p.counted {
+		others = sh.inFlight.Add(-1)
+	} else {
+		others = sh.inFlight.Load()
+	}
+	if !hotSlotsDisabled.Load() && parserFootprint(p) <= hotParserMax &&
+		sh.hot.CompareAndSwap(nil, p) {
+		return
+	}
+	if others > 0 && parserReserve.Offer(sh.rtp, p) {
 		return
 	}
 	sh.parserPool.Put(p)
 }
 
-// shapeFor returns the canonical shape for t within this process.
+// shapeFor returns the canonical shape for t within this process. A warm type
+// hits the cache without constructing the build closure.
 func shapeFor(t reflect.Type) (*shape, error) {
 	rtp := uintptr(gort.TypePtr(t))
+	if sh, ok := shapeCache.Lookup(rtp); ok {
+		return sh, nil
+	}
 	return shapeCache.GetOrBuild(rtp, func() (*shape, error) {
 		return buildShape(rtp, t)
 	})
@@ -415,6 +517,9 @@ func buildShape(rtp uintptr, t reflect.Type) (*shape, error) {
 			TypeMeta: unsafe.SliceData(tt.TypeMeta),
 		},
 	}
+
+	// The zero Config demands nothing, so it cannot fail.
+	sh.defaultOptFlags, _ = contiguousOptFlags(tt, option.Config{})
 
 	// A warm parser from the reserve outlives the pool's GC-driven eviction, so
 	// New prefers one over building cold.
@@ -569,18 +674,16 @@ func (p *Parser) unmarshalPadded(src []byte, rootDst unsafe.Pointer, aliasSrc []
 	// Each call starts with an empty stream scope stack.
 	p.streamScopes = p.streamScopes[:0]
 
-	m.Ctx = p.ctxTemplate // Copy the context template and fill per-call fields.
-	m.Ctx.OptFlags |= p.optFlags
-	m.Ctx.Src = unsafe.SliceData(src) // Borrowed for the native call.
-	m.Ctx.SrcLen = uint64(srcLen)
 	// A copied drive is byte-identical to the caller-owned original over
-	// [0, srcLen), so SrcAliasDelta rebases every zero-copy alias from the
+	// [0, srcLen), so the alias delta rebases every zero-copy alias from the
 	// scan buffer back into the caller's backing.
+	var aliasDelta uintptr
 	if aliasSrc != nil {
-		m.Ctx.SrcAliasDelta = uintptr(unsafe.Pointer(unsafe.SliceData(src))) -
+		aliasDelta = uintptr(unsafe.Pointer(unsafe.SliceData(src))) -
 			uintptr(unsafe.Pointer(unsafe.SliceData(aliasSrc)))
 	}
-	m.Ctx.RootDst = rootDst // Borrowed for the native call.
+	// Src and RootDst are borrowed for the native call.
+	p.setCallCtx(m, unsafe.SliceData(src), uint64(srcLen), rootDst, aliasDelta, 0)
 
 	alloc := p.alloc
 	allocABI := &m.Alloc
@@ -600,54 +703,22 @@ func (p *Parser) unmarshalPadded(src []byte, rootDst unsafe.Pointer, aliasSrc []
 	allocABI.StrGenStart = 0
 	m.Core.StrUsed = 0
 
-	// The native scan computes the tape bound before writing. Go supplies an
-	// initial guess and grows to TapeNeed on a BindYieldTapeArena yield.
 	var valueDoc *valueabi.Doc
-	if p.tt.HasValueField || p.tt.HasPolyField {
-		// TAPE_DUAL includes the split-tape surcharge in the scan bound.
-		m.Ctx.OptFlags |= ndec.BindOptSizeTape
-		if p.tt.HasSplitTape {
-			m.Ctx.OptFlags |= ndec.BindOptTapeDual
-		}
-		ceiling := srcLen
-		if p.tt.HasSplitTape {
-			if k := p.tt.SplitTapeSites; k != vbind.SplitTapeSitesUnbounded {
-				ceiling = srcLen + 2*k
-			} else {
-				ceiling = 2 * srcLen
-			}
-		}
-		ceiling += 3
-		// Native clamps its measured bound to this ceiling before requesting growth.
-		allocABI.TapeNeed = uint32(ceiling)
-		// Allocate a bounded initial guess; token-dense input grows to TapeNeed.
-		guess := min(srcLen/8+64, ceiling)
-		// Reuse the completed-scan high-water mark with growth headroom.
-		if hw := alloc.TapeHighWater(); hw > 0 {
-			guess = min(max(guess, hw+hw/4+16), ceiling)
-		}
-		if err := syncTapeArena(alloc, allocABI, guess); err != nil {
+	tape := p.tt.HasValueField || p.tt.HasPolyField
+	if tape {
+		var err error
+		if valueDoc, err = p.syncTapeDrive(m, srcLen); err != nil {
 			return err
 		}
 	} else {
+		// Drop any arena view a prior tape-bind walk left on this machine.
 		allocABI.TapeArena = nil
 		allocABI.TapeArenaCap = 0
 		allocABI.TapeUsed = 0
-	}
-	// The doc is gated more tightly than the tape arena. A poly field needs the
-	// arena for its intermediate tape, but that tape is scratch: it is consumed
-	// by the case walker and never published. Only a reachable KindValue can put
-	// a Value in the destination, and only then is there something to publish a
-	// doc for.
-	if p.tt.HasValueField {
-		valueDoc = syncDoc(allocABI)
-	} else {
 		allocABI.ValueDoc = nil
 	}
 
-	syncDeferredDrain(alloc, allocABI)
-
-	syncMapBuf(alloc, allocABI)
+	resetDrainCursors(allocABI)
 
 	// The detach budget is charged in document bytes: this parse's output is
 	// what a retained backing link would pin live.
@@ -667,7 +738,7 @@ func (p *Parser) unmarshalPadded(src []byte, rootDst unsafe.Pointer, aliasSrc []
 		runtime.KeepAlive(aliasSrc) // Roots the zero-copy aliased backing.
 	}()
 
-	if err := p.driveBind(m, func() bool { return false }); err != nil {
+	if err := p.driveRoot(m); err != nil {
 		sealFailedStrArena(alloc, m)
 		return err
 	}
@@ -687,14 +758,60 @@ func (p *Parser) unmarshalPadded(src []byte, rootDst unsafe.Pointer, aliasSrc []
 		}
 	}
 
-	// Native coordinates are relative to the current arena views.
+	// Native coordinates are relative to the current arena views, so the doc
+	// publishes before either commit advances them.
 	publishDoc(p, valueDoc, m)
-
 	alloc.CommitStrArena(int(m.Core.StrUsed))
-	alloc.CommitTapeArena(int(m.Alloc.TapeUsed))
-	// A completed scan contributes the reusable sizing bound.
-	alloc.NoteTapeBound(int(m.Alloc.TapeNeed))
+	if tape {
+		alloc.CommitTapeArena(int(m.Alloc.TapeUsed))
+		// A completed scan contributes the reusable sizing bound.
+		alloc.NoteTapeBound(int(m.Alloc.TapeNeed))
+	}
 	return nil
+}
+
+// syncTapeDrive sizes and installs the tape arena for a contiguous drive over
+// a tree that routes through the tape. It returns the doc to publish when the
+// tree holds a Value field, and nil otherwise.
+func (p *Parser) syncTapeDrive(m *ndec.BindMachine, srcLen int) (*valueabi.Doc, error) {
+	alloc := p.alloc
+	allocABI := &m.Alloc
+	// The native scan computes the tape bound before writing. Go supplies an
+	// initial guess and grows to TapeNeed on a BindYieldTapeArena yield.
+	// TAPE_DUAL includes the split-tape surcharge in the scan bound.
+	m.Ctx.OptFlags |= ndec.BindOptSizeTape
+	if p.tt.HasSplitTape {
+		m.Ctx.OptFlags |= ndec.BindOptTapeDual
+	}
+	ceiling := srcLen
+	if p.tt.HasSplitTape {
+		if k := p.tt.SplitTapeSites; k != vbind.SplitTapeSitesUnbounded {
+			ceiling = srcLen + 2*k
+		} else {
+			ceiling = 2 * srcLen
+		}
+	}
+	ceiling += 3
+	// Native clamps its measured bound to this ceiling before requesting growth.
+	allocABI.TapeNeed = uint32(ceiling)
+	// Allocate a bounded initial guess; token-dense input grows to TapeNeed.
+	guess := min(srcLen/8+64, ceiling)
+	// Reuse the completed-scan high-water mark with growth headroom.
+	if hw := alloc.TapeHighWater(); hw > 0 {
+		guess = min(max(guess, hw+hw/4+16), ceiling)
+	}
+	if err := syncTapeArena(alloc, allocABI, guess); err != nil {
+		return nil, err
+	}
+	// The doc is gated more tightly than the tape arena. A poly field needs the
+	// arena for its intermediate tape, but that tape is scratch: it is consumed
+	// by the case walker and never published. Only a reachable KindValue can put
+	// a Value in the destination, and only then is there something to publish a
+	// doc for.
+	if p.tt.HasValueField {
+		return syncDoc(allocABI), nil
+	}
+	return nil, nil
 }
 
 // driveBind is the unified main loop. It repeatedly runs the native entry and
@@ -708,10 +825,10 @@ func (p *Parser) unmarshalPadded(src []byte, rootDst unsafe.Pointer, aliasSrc []
 //
 // The entry follows the input model: the feed driver runs the window-aware
 // engine over the live window, every other drive runs the scanning engine
-// over p.src. All native driving flows through this function: the top-level
-// unmarshal, feed, and tape-bind walk loops pass a never-stop predicate,
-// Item.Decode (non-leaf) passes scope.stop to bind one element body, and
-// Scope.nextBatch (leaf) passes scope.stop to fill one batch. The recursion
+// over p.src. Root drives (unmarshal, feed, tape-bind walk) never halt early
+// and run through driveRoot. Scoped drives come here: Item.Decode (non-leaf)
+// passes scope.stop to bind one element body, and Scope.nextBatch (leaf)
+// passes scope.stop to fill one batch. The recursion
 // (Value -> driveBind -> serveYield -> serveStreamBatch -> OnRead -> Value ->
 // driveBind) is what lets a non-leaf element's body bind activate nested
 // stream handlers.
@@ -734,6 +851,25 @@ func (p *Parser) driveBind(m *ndec.BindMachine, stop func() bool) error {
 		}
 		if stop() {
 			return nil
+		}
+	}
+}
+
+// driveRoot is driveBind without the stop predicate: it runs until
+// completion or error. A drive that completes in one native run, the common
+// case for small documents, returns without dispatching a yield.
+func (p *Parser) driveRoot(m *ndec.BindMachine) error {
+	for {
+		if p.feed != nil {
+			ndec.BindParseStreamRun(unsafe.Pointer(m))
+		} else {
+			ndec.BindParseRun(unsafe.Pointer(m))
+		}
+		if m.Yield.PendingAction == ndec.BindYieldNone {
+			return nil
+		}
+		if _, err := p.serveYield(m); err != nil {
+			return err
 		}
 	}
 }

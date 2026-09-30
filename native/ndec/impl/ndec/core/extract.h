@@ -59,31 +59,19 @@ INLINE uint32_t ndec_extract_bits(uint64_t bits, uint32_t *out, uint32_t count, 
 }
 #undef EMIT4_INDEXES
 
-/* Scan a partial final chunk (< 64 bytes). Copies src into the caller-owned
- * 64-byte padded buffer, runs one chunk scan, and appends the masked
- * structural indexes to out_indexes at `count` with `base`.
- *
- * `padded` is threaded down from ndec_scan_structurals' caller so this
- * helper's own frame stays near zero. The buffer is transient (overwritten
- * each call), so a single caller-owned slot serves every invocation.
- *
- * always_inline: padded_chunk saves the same 6 callee-saved GP regs as
- * scan_structurals (rbp/r15/r14/r13/r12/rbx). Inlining lets the pushes
- * merge, eliminating padded_chunk's 56B frame from the nosplit chain.
- * The inlined body (scan_chunk_dom + utf8_check_block64) shares spill
- * slots with scan_structurals' own inlined copies of the same functions. */
-INLINE int ndec_scan_padded_chunk(const uint8_t *src, uint32_t src_len, NdecScanState *state, Utf8Checker *utf8,
-                                  uint8_t *padded /* 64B aligned */, uint32_t *out_indexes, uint32_t count,
-                                  uint32_t base, int strict, int count_mode, NdecPlanePop *pop) {
-  __builtin_memset(padded, 0x20, 64);
-  __builtin_memcpy(padded, src, src_len);
-  /* The pad is 0x20 (whitespace), so it contributes to no plane and the counts
-   * need no masking even though the index extraction below does. */
-  NdecChunkResult r = count_mode == NDEC_COUNT_PLANES    ? ndec_scan_chunk_dom_counted(padded, state)
-                      : count_mode == NDEC_COUNT_SCALARS ? ndec_scan_chunk_dom_scount(padded, state)
-                                                         : ndec_scan_chunk_dom(padded, state);
+/* Scan a partial final chunk (< 64 bytes) in place. Every caller supplies 64
+ * bytes of 0x20 padding past the input, so the 64-byte load past a short tail
+ * reads only pad, and 0x20 contributes to no plane: the counts need no
+ * masking even though the index extraction below does. Pad bytes are ASCII,
+ * so the UTF-8 check stays exact as well. */
+INLINE int ndec_scan_tail_chunk(const uint8_t *src, uint32_t src_len, NdecScanState *state, Utf8Checker *utf8,
+                                uint32_t *out_indexes, uint32_t count, uint32_t base, int strict, int count_mode,
+                                NdecPlanePop *pop) {
+  NdecChunkResult r = count_mode == NDEC_COUNT_PLANES    ? ndec_scan_chunk_dom_counted(src, state)
+                      : count_mode == NDEC_COUNT_SCALARS ? ndec_scan_chunk_dom_scount(src, state)
+                                                         : ndec_scan_chunk_dom(src, state);
   if (count_mode != NDEC_COUNT_NONE) NDEC_PLANE_POP_ADD(pop, r);
-  if (strict) utf8_check_block64(utf8, padded);
+  if (strict) utf8_check_block64(utf8, src);
   uint64_t mask = ((uint64_t)1 << src_len) - 1;
   return (int)ndec_extract_bits(r.structural & mask, out_indexes, count, base);
 }
@@ -101,8 +89,9 @@ INLINE int ndec_scan_padded_chunk(const uint8_t *src, uint32_t src_len, NdecScan
  * and the rest of the JSON grammar are validated independently by the
  * binding walk.
  *
- * Owns its scratch (NdecScanState + Utf8Checker + 64B padded input) inline.
- * Callers pass only the source buffer and output storage. */
+ * Owns its scratch (NdecScanState + Utf8Checker) inline. Callers pass the
+ * source buffer, which must carry 64 bytes of 0x20 padding past len, and
+ * output storage. */
 static inline __attribute__((always_inline)) int
 ndec_scan_structurals_impl(const uint8_t *buf, size_t len, uint32_t *out_indexes, uint32_t *out_count,
                            uint32_t capacity, int strict, int ctl, int count_mode, NdecPlanePop *out_pop) {
@@ -122,7 +111,6 @@ ndec_scan_structurals_impl(const uint8_t *buf, size_t len, uint32_t *out_indexes
   })
   NdecScanState state;
   Utf8Checker utf8;
-  uint8_t padded[64] __attribute__((aligned(16)));
   __builtin_memset(&state, 0, sizeof(state));
   state.prev_structural_or_ws = 1;
   if (strict) utf8_checker_init(&utf8);
@@ -137,8 +125,8 @@ ndec_scan_structurals_impl(const uint8_t *buf, size_t len, uint32_t *out_indexes
   uint32_t count         = 0;
 
   if (len < 64) {
-    count = (uint32_t)ndec_scan_padded_chunk(buf, (uint32_t)len, &state, &utf8, padded, out_indexes, count, 0u,
-                                             strict, count_mode, &pop);
+    count = (uint32_t)ndec_scan_tail_chunk(buf, (uint32_t)len, &state, &utf8, out_indexes, count, 0u, strict,
+                                           count_mode, &pop);
     if (state.prev_in_string) return -1;
     if ((strict || ctl) && state.control_error) return -1;
     if (strict) {
@@ -213,8 +201,8 @@ ndec_scan_structurals_impl(const uint8_t *buf, size_t len, uint32_t *out_indexes
       if (have_r1) {
         count = ndec_extract_bits(prev_r1_bits, out_indexes, count, prev_r1_base);
       }
-      count = (uint32_t)ndec_scan_padded_chunk(rest, (uint32_t)rem, &state, &utf8, padded, out_indexes, count,
-                                               (uint32_t)(rest - buf), strict, count_mode, &pop);
+      count = (uint32_t)ndec_scan_tail_chunk(rest, (uint32_t)rem, &state, &utf8, out_indexes, count,
+                                             (uint32_t)(rest - buf), strict, count_mode, &pop);
       break;
     } else {
       /* flush deferred chunks */
@@ -492,7 +480,7 @@ static inline __attribute__((always_inline)) NdecWindowScan ndec_scan_window_imp
       off += 64;
     } else {
       /* The pad is 0x20 and contributes to no plane, matching
-       * ndec_scan_padded_chunk. A non-final window additionally completes
+       * ndec_scan_tail_chunk. A non-final window additionally completes
        * a pending multibyte sequence so the UTF-8 check cannot fault on
        * the pad. */
       __builtin_memset(padded, 0x20, 64);

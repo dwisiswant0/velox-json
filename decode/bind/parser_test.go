@@ -3,8 +3,11 @@ package bind
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
+	"unsafe"
 
+	"github.com/velox-io/json/decode/dom"
 	"github.com/velox-io/json/native/ndec"
 	"github.com/velox-io/json/vbind"
 )
@@ -165,5 +168,58 @@ func TestUnmarshalPaddedRejectsCorruptTail(t *testing.T) {
 	}
 	if err := UnmarshalPadded(padded[:n:n], &z); err == nil {
 		t.Fatal("missing pad capacity accepted")
+	}
+}
+
+// TestShapeCtxSurvivesEveryDrive pins the invariant that lets the hot path
+// skip copying ctxTemplate: every drive leaves the shape fields of the
+// machine context exactly as construction installed them.
+func TestShapeCtxSurvivesEveryDrive(t *testing.T) {
+	type X struct {
+		N int    `json:"n"`
+		S string `json:"s"`
+	}
+	p, err := NewParser[X]()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := (*ndec.BindMachine)(unsafe.Pointer(unsafe.SliceData(p.machine)))
+	check := func(drive string) {
+		t.Helper()
+		got, want := m.Ctx, p.ctxTemplate
+		if got.Types != want.Types || got.TypeMeta != want.TypeMeta || got.RootType != want.RootType ||
+			got.AnyTypeIdx != want.AnyTypeIdx || got.Polys != want.Polys {
+			t.Fatalf("after %s: shape ctx fields drifted: got %+v, want %+v", drive, got, want)
+		}
+	}
+	check("construction")
+
+	var x X
+	if err = p.Unmarshal([]byte(`{"n":1,"s":"a"}`), &x); err != nil {
+		t.Fatal(err)
+	}
+	check("Unmarshal")
+	if err = p.Unmarshal([]byte(`{"n":`), &x); err == nil {
+		t.Fatal("want syntax error")
+	}
+	check("failed Unmarshal")
+	if err = p.UnmarshalPadded(Pad([]byte(`{"n":2}`)), &x); err != nil {
+		t.Fatal(err)
+	}
+	check("UnmarshalPadded")
+	if err = p.UnmarshalFeed(strings.NewReader(`{"n":3,"s":"b"}`), &x); err != nil {
+		t.Fatal(err)
+	}
+	check("UnmarshalFeed")
+	v, err := dom.Parse([]byte(`{"n":4,"s":"c"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = p.UnmarshalValue(v, &x); err != nil {
+		t.Fatal(err)
+	}
+	check("UnmarshalValue")
+	if x.N != 4 || x.S != "c" {
+		t.Fatalf("got %+v", x)
 	}
 }

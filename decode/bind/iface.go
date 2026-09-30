@@ -14,14 +14,6 @@ import (
 	"github.com/velox-io/json/vbind"
 )
 
-// syncDeferredDrain mirrors the allocator's deferred-value buffer into the ABI
-// and resets its bump cursor.
-func syncDeferredDrain(alloc *vbind.Allocator, allocABI *ndec.BindAllocator) {
-	allocABI.DeferredDrain = (*byte)(unsafe.Pointer(unsafe.SliceData(alloc.DeferredDrain)))
-	allocABI.DeferredDrainCap = uint32(cap(alloc.DeferredDrain))
-	allocABI.DeferredDrainUsed = 0
-}
-
 // drainDeferredRecords invokes deferred unmarshaling hooks over their captured
 // spans. It runs before map drain so hook writes reach intermediate slots before
 // those slots are copied into runtime maps. Source-backed spans slice the

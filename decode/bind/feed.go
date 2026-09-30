@@ -339,18 +339,14 @@ func (p *Parser) feedBegin(m *ndec.BindMachine, rootDst unsafe.Pointer, f *feedS
 
 	p.streamScopes = p.streamScopes[:0]
 
+	// A continued feed keeps the live window view it already mounted.
 	cont := f.liveFor == m
 	var src *byte
 	var srcLen uint64
 	if cont {
 		src, srcLen = m.Ctx.Src, m.Ctx.SrcLen
 	}
-	m.Ctx = p.ctxTemplate
-	m.Ctx.OptFlags |= p.optFlags
-	m.Ctx.RootDst = rootDst
-	if cont {
-		m.Ctx.Src, m.Ctx.SrcLen = src, srcLen
-	}
+	p.setCallCtx(m, src, srcLen, rootDst, 0, 0)
 
 	allocABI := &m.Alloc
 	// Only a reachable KindValue can put a Value in the destination, so the
@@ -404,8 +400,7 @@ func (p *Parser) feedBegin(m *ndec.BindMachine, rootDst unsafe.Pointer, f *feedS
 		}
 	}
 
-	syncDeferredDrain(p.alloc, allocABI)
-	syncMapBuf(p.alloc, allocABI)
+	resetDrainCursors(allocABI)
 	return nil
 }
 
@@ -413,7 +408,7 @@ func (p *Parser) feedBegin(m *ndec.BindMachine, rootDst unsafe.Pointer, f *feedS
 // Root close with input remaining is completion: the streaming engine leaves
 // the trailing judgment to the driver.
 func (p *Parser) feedDrive(m *ndec.BindMachine) error {
-	return p.driveBind(m, func() bool { return false })
+	return p.driveRoot(m)
 }
 
 // feedFinish completes one bound value: deferred callbacks before map slots

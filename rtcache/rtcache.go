@@ -144,6 +144,12 @@ type Cache[V any] struct {
 	slow sync.Map // uintptr -> V
 }
 
+// Lookup probes the fast table alone. A miss says nothing about the slow tier;
+// callers fall back to Get or GetOrBuild.
+func (c *Cache[V]) Lookup(rtp uintptr) (V, bool) {
+	return c.fast.Get(rtp)
+}
+
 // Get returns the cached value for rtp without invoking a builder. The bool
 // result is false when neither the fast nor slow tier has an entry for rtp.
 // A slow hit is promoted into the fast table so subsequent calls hit directly.

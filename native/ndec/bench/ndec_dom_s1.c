@@ -50,11 +50,12 @@ int main(int argc, char **argv) {
   fseek(f, 0, SEEK_END);
   size_t len = (size_t)ftell(f);
   fseek(f, 0, SEEK_SET);
-  uint8_t *buf = (uint8_t *)malloc(len);
+  uint8_t *buf = (uint8_t *)malloc(len + 64);
   if (fread(buf, 1, len, f) != len) {
     perror("fread");
     return 1;
   }
+  memset(buf + len, 0x20, 64);
   fclose(f);
 
   uint32_t cap  = (uint32_t)(len + 64);

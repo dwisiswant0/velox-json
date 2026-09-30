@@ -100,6 +100,10 @@ type Allocator struct {
 	// cadenceLeft counts the Releases remaining before byCadence detaches.
 	cadenceLeft uint32
 
+	// detachable reports that byCadence or byBudget holds a class, fixed at
+	// construction. Release skips both detach policies otherwise.
+	detachable bool
+
 	// detachDebt accumulates decoded input bytes since the last budget detach.
 	detachDebt uint64
 
@@ -276,6 +280,8 @@ func NewAllocator(tt *TypeTree, opts ...AllocOption) *Allocator {
 			a.retained = append(a.retained, b)
 		}
 	}
+	a.detachable = len(a.byCadence.bumps)+len(a.byCadence.batchs)+
+		len(a.byBudget.bumps)+len(a.byBudget.batchs) != 0
 	a.ensureStatsSlots()
 	return a
 }
@@ -298,20 +304,24 @@ func (a *Allocator) Release() {
 	}
 	a.retained = a.retained[:0]
 
-	a.sweepMapSlots()
+	if len(a.mapSweep) != 0 {
+		a.sweepMapSlots()
+	}
 
 	// Recursive backings chain across parses: a published header inside a pooled
 	// block pins its element backing, and each element pins that parse's decoded
 	// content, so the block retains every parse it served. The cadence breaks
 	// that chain for structurally bounded backings; the budget breaks it for the
 	// any-rooted ones, whose eface-published regions retain whole documents.
-	if a.cadenceLeft--; a.cadenceLeft == 0 {
-		a.cadenceLeft = slotDetachK
-		a.byCadence.reset()
-	}
-	if a.detachDebt >= detachDebtBudget {
-		a.detachDebt = 0
-		a.byBudget.reset()
+	if a.detachable {
+		if a.cadenceLeft--; a.cadenceLeft == 0 {
+			a.cadenceLeft = slotDetachK
+			a.byCadence.reset()
+		}
+		if a.detachDebt >= detachDebtBudget {
+			a.detachDebt = 0
+			a.byBudget.reset()
+		}
 	}
 
 	a.StageLive()

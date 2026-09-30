@@ -10,12 +10,6 @@ import (
 	"github.com/velox-io/json/vbind"
 )
 
-func syncMapBuf(alloc *vbind.Allocator, allocABI *ndec.BindAllocator) {
-	allocABI.MapBuf = (*byte)(unsafe.SliceData(alloc.MapBuf))
-	allocABI.MapBufUsed = 0
-	allocABI.MapBufCap = uint32(cap(alloc.MapBuf))
-}
-
 func (p *Parser) serveFlushMap(m *ndec.BindMachine) error {
 	return drainAllMapSlots(p, m)
 }
