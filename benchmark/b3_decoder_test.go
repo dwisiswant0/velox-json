@@ -31,8 +31,6 @@ func repeatNDJSON(jsonVal []byte, n int) []byte {
 
 // NDJSON streams, lazily built from compact JSON data.
 var (
-	tinyNDJSONOnce        sync.Once
-	tinyNDJSONData        []byte
 	smallNDJSONOnce       sync.Once
 	smallNDJSONData       []byte
 	escapeHeavyNDJSONOnce sync.Once
@@ -44,11 +42,6 @@ var (
 	emptyObjNDJSONOnce    sync.Once
 	emptyObjNDJSONData    []byte
 )
-
-func loadTinyNDJSON() []byte {
-	tinyNDJSONOnce.Do(func() { tinyNDJSONData = repeatNDJSON(LoadTinyCompactJSON(), 100) })
-	return tinyNDJSONData
-}
 
 func loadSmallNDJSON() []byte {
 	smallNDJSONOnce.Do(func() { smallNDJSONData = repeatNDJSON(LoadSmallCompactJSON(), 100) })
@@ -73,46 +66,6 @@ func loadTwitterNDJSON() []byte {
 func loadEmptyObjNDJSON() []byte {
 	emptyObjNDJSONOnce.Do(func() { emptyObjNDJSONData = []byte(strings.Repeat("{}\n", 1000)) })
 	return emptyObjNDJSONData
-}
-
-// =============================================================================
-// Tiny NDJSON Stream (100 copies of TinyCompactJSON)
-// =============================================================================
-
-func Benchmark_Decoder_Tiny_Sonic(b *testing.B) {
-	data := loadTinyNDJSON()
-	b.SetBytes(int64(len(data)))
-	b.ReportAllocs()
-	for b.Loop() {
-		dec := sonic.ConfigDefault.NewDecoder(bytes.NewReader(data))
-		for {
-			var s Tiny
-			if err := dec.Decode(&s); err != nil {
-				if err == io.EOF {
-					break
-				}
-				b.Fatal(err)
-			}
-		}
-	}
-}
-
-func Benchmark_Decoder_Tiny_Velox(b *testing.B) {
-	data := loadTinyNDJSON()
-	b.SetBytes(int64(len(data)))
-	b.ReportAllocs()
-	for b.Loop() {
-		dec := vjson.NewDecoder(bytes.NewReader(data))
-		for {
-			var s Tiny
-			if err := dec.Decode(&s); err != nil {
-				if err == io.EOF {
-					break
-				}
-				b.Fatal(err)
-			}
-		}
-	}
 }
 
 // =============================================================================

@@ -77,7 +77,7 @@ func safeVeloxMarshal[T any](v *T) (out []byte, err error) {
 
 func benchmarkJSONBenchUnmarshalSonic[T any](b *testing.B, data []byte) {
 	benchmarkJSONBenchUnmarshal(b, data, func(data []byte, dst *T) error {
-		return sonic.Unmarshal(data, dst)
+		return sonic.ConfigFastest.UnmarshalFromString(unsafeString(data), dst)
 	})
 }
 
@@ -101,7 +101,7 @@ func benchmarkJSONBenchUnmarshalJSONv2[T any](b *testing.B, data []byte) {
 
 func benchmarkJSONBenchUnmarshalGoJSON[T any](b *testing.B, data []byte) {
 	benchmarkJSONBenchUnmarshal(b, data, func(data []byte, dst *T) error {
-		return gojson.Unmarshal(data, dst)
+		return gojson.UnmarshalOf(data, dst, gojson.DecodeNoCopyString())
 	})
 }
 
@@ -248,6 +248,9 @@ func mustLoadJSONBenchTwitterStatusRaw() []byte {
 func Benchmark_Marshal_JSONBenchCanadaGeometry_Sonic(b *testing.B) {
 	benchmarkJSONBenchMarshalSonic(b, loadJSONBenchCanadaGeometryValue())
 }
+func Benchmark_Marshal_JSONBenchCanadaGeometry_GoJSON(b *testing.B) {
+	benchmarkJSONBenchMarshalGoJSON(b, loadJSONBenchCanadaGeometryValue())
+}
 func Benchmark_Marshal_JSONBenchCanadaGeometry_JSONv2(b *testing.B) {
 	benchmarkJSONBenchMarshalJSONv2(b, loadJSONBenchCanadaGeometryValue())
 }
@@ -255,12 +258,12 @@ func Benchmark_Marshal_JSONBenchCanadaGeometry_JSONv2(b *testing.B) {
 func Benchmark_Marshal_JSONBenchCanadaGeometry_Velox(b *testing.B) {
 	benchmarkJSONBenchMarshalVelox(b, loadJSONBenchCanadaGeometryValue())
 }
-func Benchmark_Marshal_JSONBenchCanadaGeometry_GoJSON(b *testing.B) {
-	benchmarkJSONBenchMarshalGoJSON(b, loadJSONBenchCanadaGeometryValue())
-}
 
 func Benchmark_Marshal_JSONBenchCITMCatalog_Sonic(b *testing.B) {
 	benchmarkJSONBenchMarshalSonic(b, loadJSONBenchCITMCatalogValue())
+}
+func Benchmark_Marshal_JSONBenchCITMCatalog_GoJSON(b *testing.B) {
+	benchmarkJSONBenchMarshalGoJSON(b, loadJSONBenchCITMCatalogValue())
 }
 func Benchmark_Marshal_JSONBenchCITMCatalog_JSONv2(b *testing.B) {
 	benchmarkJSONBenchMarshalJSONv2(b, loadJSONBenchCITMCatalogValue())
@@ -269,12 +272,12 @@ func Benchmark_Marshal_JSONBenchCITMCatalog_JSONv2(b *testing.B) {
 func Benchmark_Marshal_JSONBenchCITMCatalog_Velox(b *testing.B) {
 	benchmarkJSONBenchMarshalVelox(b, loadJSONBenchCITMCatalogValue())
 }
-func Benchmark_Marshal_JSONBenchCITMCatalog_GoJSON(b *testing.B) {
-	benchmarkJSONBenchMarshalGoJSON(b, loadJSONBenchCITMCatalogValue())
-}
 
 func Benchmark_Marshal_JSONBenchGolangSource_Sonic(b *testing.B) {
 	benchmarkJSONBenchMarshalSonic(b, loadJSONBenchGolangSourceValue())
+}
+func Benchmark_Marshal_JSONBenchGolangSource_GoJSON(b *testing.B) {
+	benchmarkJSONBenchMarshalGoJSON(b, loadJSONBenchGolangSourceValue())
 }
 func Benchmark_Marshal_JSONBenchGolangSource_JSONv2(b *testing.B) {
 	benchmarkJSONBenchMarshalJSONv2(b, loadJSONBenchGolangSourceValue())
@@ -283,12 +286,12 @@ func Benchmark_Marshal_JSONBenchGolangSource_JSONv2(b *testing.B) {
 func Benchmark_Marshal_JSONBenchGolangSource_Velox(b *testing.B) {
 	benchmarkJSONBenchMarshalVelox(b, loadJSONBenchGolangSourceValue())
 }
-func Benchmark_Marshal_JSONBenchGolangSource_GoJSON(b *testing.B) {
-	benchmarkJSONBenchMarshalGoJSON(b, loadJSONBenchGolangSourceValue())
-}
 
 func Benchmark_Marshal_JSONBenchStringUnicode_Sonic(b *testing.B) {
 	benchmarkJSONBenchMarshalSonic(b, loadJSONBenchStringUnicodeValue())
+}
+func Benchmark_Marshal_JSONBenchStringUnicode_GoJSON(b *testing.B) {
+	benchmarkJSONBenchMarshalGoJSON(b, loadJSONBenchStringUnicodeValue())
 }
 func Benchmark_Marshal_JSONBenchStringUnicode_JSONv2(b *testing.B) {
 	benchmarkJSONBenchMarshalJSONv2(b, loadJSONBenchStringUnicodeValue())
@@ -297,12 +300,12 @@ func Benchmark_Marshal_JSONBenchStringUnicode_JSONv2(b *testing.B) {
 func Benchmark_Marshal_JSONBenchStringUnicode_Velox(b *testing.B) {
 	benchmarkJSONBenchMarshalVelox(b, loadJSONBenchStringUnicodeValue())
 }
-func Benchmark_Marshal_JSONBenchStringUnicode_GoJSON(b *testing.B) {
-	benchmarkJSONBenchMarshalGoJSON(b, loadJSONBenchStringUnicodeValue())
-}
 
 func Benchmark_Marshal_JSONBenchSyntheaFHIR_Sonic(b *testing.B) {
 	benchmarkJSONBenchMarshalSonic(b, loadJSONBenchSyntheaFHIRValue())
+}
+func Benchmark_Marshal_JSONBenchSyntheaFHIR_GoJSON(b *testing.B) {
+	benchmarkJSONBenchMarshalGoJSON(b, loadJSONBenchSyntheaFHIRValue())
 }
 func Benchmark_Marshal_JSONBenchSyntheaFHIR_JSONv2(b *testing.B) {
 	benchmarkJSONBenchMarshalJSONv2(b, loadJSONBenchSyntheaFHIRValue())
@@ -311,12 +314,12 @@ func Benchmark_Marshal_JSONBenchSyntheaFHIR_JSONv2(b *testing.B) {
 func Benchmark_Marshal_JSONBenchSyntheaFHIR_Velox(b *testing.B) {
 	benchmarkJSONBenchMarshalVelox(b, loadJSONBenchSyntheaFHIRValue())
 }
-func Benchmark_Marshal_JSONBenchSyntheaFHIR_GoJSON(b *testing.B) {
-	benchmarkJSONBenchMarshalGoJSON(b, loadJSONBenchSyntheaFHIRValue())
-}
 
 func Benchmark_Marshal_JSONBenchTwitterStatus_Sonic(b *testing.B) {
 	benchmarkJSONBenchMarshalSonic(b, loadJSONBenchTwitterStatusValue())
+}
+func Benchmark_Marshal_JSONBenchTwitterStatus_GoJSON(b *testing.B) {
+	benchmarkJSONBenchMarshalGoJSON(b, loadJSONBenchTwitterStatusValue())
 }
 func Benchmark_Marshal_JSONBenchTwitterStatus_JSONv2(b *testing.B) {
 	benchmarkJSONBenchMarshalJSONv2(b, loadJSONBenchTwitterStatusValue())
@@ -325,12 +328,12 @@ func Benchmark_Marshal_JSONBenchTwitterStatus_JSONv2(b *testing.B) {
 func Benchmark_Marshal_JSONBenchTwitterStatus_Velox(b *testing.B) {
 	benchmarkJSONBenchMarshalVelox(b, loadJSONBenchTwitterStatusValue())
 }
-func Benchmark_Marshal_JSONBenchTwitterStatus_GoJSON(b *testing.B) {
-	benchmarkJSONBenchMarshalGoJSON(b, loadJSONBenchTwitterStatusValue())
-}
 
 func Benchmark_Unmarshal_JSONBenchCanadaGeometry_Sonic(b *testing.B) {
 	benchmarkJSONBenchUnmarshalSonic[jsonbench.CanadaRoot](b, mustLoadJSONBenchCanadaGeometryRaw())
+}
+func Benchmark_Unmarshal_JSONBenchCanadaGeometry_GoJSON(b *testing.B) {
+	benchmarkJSONBenchUnmarshalGoJSON[jsonbench.CanadaRoot](b, mustLoadJSONBenchCanadaGeometryRaw())
 }
 func Benchmark_Unmarshal_JSONBenchCanadaGeometry_JSONv2(b *testing.B) {
 	benchmarkJSONBenchUnmarshalJSONv2[jsonbench.CanadaRoot](b, mustLoadJSONBenchCanadaGeometryRaw())
@@ -339,12 +342,12 @@ func Benchmark_Unmarshal_JSONBenchCanadaGeometry_JSONv2(b *testing.B) {
 func Benchmark_Unmarshal_JSONBenchCanadaGeometry_Velox(b *testing.B) {
 	benchmarkJSONBenchUnmarshalVelox[jsonbench.CanadaRoot](b, mustLoadJSONBenchCanadaGeometryRaw())
 }
-func Benchmark_Unmarshal_JSONBenchCanadaGeometry_GoJSON(b *testing.B) {
-	benchmarkJSONBenchUnmarshalGoJSON[jsonbench.CanadaRoot](b, mustLoadJSONBenchCanadaGeometryRaw())
-}
 
 func Benchmark_Unmarshal_JSONBenchCITMCatalog_Sonic(b *testing.B) {
 	benchmarkJSONBenchUnmarshalSonic[jsonbench.CITMRoot](b, mustLoadJSONBenchCITMCatalogRaw())
+}
+func Benchmark_Unmarshal_JSONBenchCITMCatalog_GoJSON(b *testing.B) {
+	benchmarkJSONBenchUnmarshalGoJSON[jsonbench.CITMRoot](b, mustLoadJSONBenchCITMCatalogRaw())
 }
 func Benchmark_Unmarshal_JSONBenchCITMCatalog_JSONv2(b *testing.B) {
 	benchmarkJSONBenchUnmarshalJSONv2[jsonbench.CITMRoot](b, mustLoadJSONBenchCITMCatalogRaw())
@@ -353,12 +356,12 @@ func Benchmark_Unmarshal_JSONBenchCITMCatalog_JSONv2(b *testing.B) {
 func Benchmark_Unmarshal_JSONBenchCITMCatalog_Velox(b *testing.B) {
 	benchmarkJSONBenchUnmarshalVelox[jsonbench.CITMRoot](b, mustLoadJSONBenchCITMCatalogRaw())
 }
-func Benchmark_Unmarshal_JSONBenchCITMCatalog_GoJSON(b *testing.B) {
-	benchmarkJSONBenchUnmarshalGoJSON[jsonbench.CITMRoot](b, mustLoadJSONBenchCITMCatalogRaw())
-}
 
 func Benchmark_Unmarshal_JSONBenchGolangSource_Sonic(b *testing.B) {
 	benchmarkJSONBenchUnmarshalSonic[jsonbench.GolangRoot](b, mustLoadJSONBenchGolangSourceRaw())
+}
+func Benchmark_Unmarshal_JSONBenchGolangSource_GoJSON(b *testing.B) {
+	benchmarkJSONBenchUnmarshalGoJSON[jsonbench.GolangRoot](b, mustLoadJSONBenchGolangSourceRaw())
 }
 func Benchmark_Unmarshal_JSONBenchGolangSource_JSONv2(b *testing.B) {
 	benchmarkJSONBenchUnmarshalJSONv2[jsonbench.GolangRoot](b, mustLoadJSONBenchGolangSourceRaw())
@@ -367,12 +370,12 @@ func Benchmark_Unmarshal_JSONBenchGolangSource_JSONv2(b *testing.B) {
 func Benchmark_Unmarshal_JSONBenchGolangSource_Velox(b *testing.B) {
 	benchmarkJSONBenchUnmarshalVelox[jsonbench.GolangRoot](b, mustLoadJSONBenchGolangSourceRaw())
 }
-func Benchmark_Unmarshal_JSONBenchGolangSource_GoJSON(b *testing.B) {
-	benchmarkJSONBenchUnmarshalGoJSON[jsonbench.GolangRoot](b, mustLoadJSONBenchGolangSourceRaw())
-}
 
 func Benchmark_Unmarshal_JSONBenchStringUnicode_Sonic(b *testing.B) {
 	benchmarkJSONBenchUnmarshalSonic[jsonbench.StringRoot](b, mustLoadJSONBenchStringUnicodeRaw())
+}
+func Benchmark_Unmarshal_JSONBenchStringUnicode_GoJSON(b *testing.B) {
+	benchmarkJSONBenchUnmarshalGoJSON[jsonbench.StringRoot](b, mustLoadJSONBenchStringUnicodeRaw())
 }
 func Benchmark_Unmarshal_JSONBenchStringUnicode_JSONv2(b *testing.B) {
 	benchmarkJSONBenchUnmarshalJSONv2[jsonbench.StringRoot](b, mustLoadJSONBenchStringUnicodeRaw())
@@ -381,12 +384,12 @@ func Benchmark_Unmarshal_JSONBenchStringUnicode_JSONv2(b *testing.B) {
 func Benchmark_Unmarshal_JSONBenchStringUnicode_Velox(b *testing.B) {
 	benchmarkJSONBenchUnmarshalVelox[jsonbench.StringRoot](b, mustLoadJSONBenchStringUnicodeRaw())
 }
-func Benchmark_Unmarshal_JSONBenchStringUnicode_GoJSON(b *testing.B) {
-	benchmarkJSONBenchUnmarshalGoJSON[jsonbench.StringRoot](b, mustLoadJSONBenchStringUnicodeRaw())
-}
 
 func Benchmark_Unmarshal_JSONBenchSyntheaFHIR_Sonic(b *testing.B) {
 	benchmarkJSONBenchUnmarshalSonic[jsonbench.SyntheaRoot](b, mustLoadJSONBenchSyntheaFHIRRaw())
+}
+func Benchmark_Unmarshal_JSONBenchSyntheaFHIR_GoJSON(b *testing.B) {
+	benchmarkJSONBenchUnmarshalGoJSON[jsonbench.SyntheaRoot](b, mustLoadJSONBenchSyntheaFHIRRaw())
 }
 func Benchmark_Unmarshal_JSONBenchSyntheaFHIR_JSONv2(b *testing.B) {
 	benchmarkJSONBenchUnmarshalJSONv2[jsonbench.SyntheaRoot](b, mustLoadJSONBenchSyntheaFHIRRaw())
@@ -395,12 +398,12 @@ func Benchmark_Unmarshal_JSONBenchSyntheaFHIR_JSONv2(b *testing.B) {
 func Benchmark_Unmarshal_JSONBenchSyntheaFHIR_Velox(b *testing.B) {
 	benchmarkJSONBenchUnmarshalVelox[jsonbench.SyntheaRoot](b, mustLoadJSONBenchSyntheaFHIRRaw())
 }
-func Benchmark_Unmarshal_JSONBenchSyntheaFHIR_GoJSON(b *testing.B) {
-	benchmarkJSONBenchUnmarshalGoJSON[jsonbench.SyntheaRoot](b, mustLoadJSONBenchSyntheaFHIRRaw())
-}
 
 func Benchmark_Unmarshal_JSONBenchTwitterStatus_Sonic(b *testing.B) {
 	benchmarkJSONBenchUnmarshalSonic[jsonbench.TwitterRoot](b, mustLoadJSONBenchTwitterStatusRaw())
+}
+func Benchmark_Unmarshal_JSONBenchTwitterStatus_GoJSON(b *testing.B) {
+	benchmarkJSONBenchUnmarshalGoJSON[jsonbench.TwitterRoot](b, mustLoadJSONBenchTwitterStatusRaw())
 }
 func Benchmark_Unmarshal_JSONBenchTwitterStatus_JSONv2(b *testing.B) {
 	benchmarkJSONBenchUnmarshalJSONv2[jsonbench.TwitterRoot](b, mustLoadJSONBenchTwitterStatusRaw())
@@ -408,9 +411,6 @@ func Benchmark_Unmarshal_JSONBenchTwitterStatus_JSONv2(b *testing.B) {
 
 func Benchmark_Unmarshal_JSONBenchTwitterStatus_Velox(b *testing.B) {
 	benchmarkJSONBenchUnmarshalVelox[jsonbench.TwitterRoot](b, mustLoadJSONBenchTwitterStatusRaw())
-}
-func Benchmark_Unmarshal_JSONBenchTwitterStatus_GoJSON(b *testing.B) {
-	benchmarkJSONBenchUnmarshalGoJSON[jsonbench.TwitterRoot](b, mustLoadJSONBenchTwitterStatusRaw())
 }
 
 // TestGolangSource_NoMemoryGrowth verifies that unmarshaling the recursive

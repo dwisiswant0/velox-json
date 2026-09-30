@@ -14,12 +14,13 @@ import (
 // =============================================================================
 
 func Benchmark_ParallelUnmarshal_EscapeHeavy_Sonic(b *testing.B) {
+	s := unsafeString(EscapeHeavyJSON)
 	b.SetBytes(int64(len(EscapeHeavyJSON)))
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			var p EscapeHeavyPayload
-			if err := sonic.Unmarshal(EscapeHeavyJSON, &p); err != nil {
+			if err := sonic.ConfigFastest.UnmarshalFromString(s, &p); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -44,12 +45,13 @@ func Benchmark_ParallelUnmarshal_EscapeHeavy_Velox(b *testing.B) {
 // =============================================================================
 
 func Benchmark_ParallelUnmarshal_KubePods_Sonic(b *testing.B) {
+	s := unsafeString(KubePodsJSON)
 	b.SetBytes(int64(len(KubePodsJSON)))
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			var pl KubePodList
-			if err := sonic.Unmarshal(KubePodsJSON, &pl); err != nil {
+			if err := sonic.ConfigFastest.UnmarshalFromString(s, &pl); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -74,12 +76,13 @@ func Benchmark_ParallelUnmarshal_KubePods_Velox(b *testing.B) {
 // =============================================================================
 
 func Benchmark_ParallelUnmarshal_Twitter_Sonic(b *testing.B) {
+	s := unsafeString(TwitterJSON)
 	b.SetBytes(int64(len(TwitterJSON)))
 	b.ReportAllocs()
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			var t twitter.TwitterStruct
-			if err := sonic.Unmarshal(TwitterJSON, &t); err != nil {
+			if err := sonic.ConfigFastest.UnmarshalFromString(s, &t); err != nil {
 				b.Fatal(err)
 			}
 		}

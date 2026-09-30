@@ -15,32 +15,11 @@ import (
 // that handles cycles, shared pointers, and unexported fields via unsafe, a
 // close semantic match to vcopy and a fair baseline.
 //
-// Workloads span four sizes, all loaded once via the existing fixtures:
-//   - Tiny:        flat scalar struct
+// Workloads span three sizes, all loaded once via the existing fixtures:
 //   - Small/Book:  nested structs + slices of scalars/structs
 //   - KubePodList: deep nesting, slices of structs, maps
 //   - Twitter:     large real-world JSON-derived struct tree
 // =============================================================================
-
-// --- Tiny ---
-
-func BenchmarkDeepCopy_Tiny_vcopy(b *testing.B) {
-	src := *loadTinyValue()
-
-	b.ReportAllocs()
-	for b.Loop() {
-		_, _ = vjson.DeepCopy(src)
-	}
-}
-
-func BenchmarkDeepCopy_Tiny_gdesign(b *testing.B) {
-	src := *loadTinyValue()
-
-	b.ReportAllocs()
-	for b.Loop() {
-		_ = gdreflect.DeepCopy(src)
-	}
-}
 
 // --- Small (Book) ---
 

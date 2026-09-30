@@ -325,10 +325,8 @@ func renderMarkLegend(b *strings.Builder, cx, y int) {
 				x, y-10, glyphW, ColorAxisMem)
 		}, "latency × (left axis, lower = better)"},
 		{func(x float64) {
-			// Dot riding a trend segment, mirroring the plot's memory
-			// marks; the gray fill stands in for the library color.
-			fmt.Fprintf(b, `  <line x1="%.1f" y1="%d" x2="%.1f" y2="%d" stroke="%s" stroke-width="1.5" opacity="0.5"/>`+"\n",
-				x-4, y-4, x+glyphW+4, y-4, ColorAxisMem)
+			// Dot, mirroring the plot's memory marks; the gray fill
+			// stands in for the library color.
 			fmt.Fprintf(b, `  <circle cx="%.1f" cy="%d" r="3.2" fill="%s" stroke="%s" stroke-width="1"/>`+"\n",
 				x+glyphW/2, y-4, ColorDim, ColorAxisMem)
 		}, "B/op × (right axis, lower position = larger)"},
@@ -392,8 +390,8 @@ func (g xGeometry) barWidth(np int) float64 {
 }
 
 // barCenter returns the x center of the bar for point pi of group gi.
-// Circles and trend lines reuse the same x so every mark of a library
-// stacks above that library's own bar.
+// Memory circles reuse the same x so every mark of a library stacks
+// above that library's own bar.
 func (g xGeometry) barCenter(gi, pi int) float64 {
 	np := len(g.sc.Groups[gi].Points)
 	if np == 0 {
@@ -459,7 +457,11 @@ func renderChart(b *strings.Builder, xl xGeometry, plotTop int, baseline string,
 		}
 		latTop += latStep
 	}
-	memStep, memTop := axisScale(memMax * 1.1)
+	// The extent is floored so the 1× baseline stays in the upper half
+	// of the plot: when every ratio hugs 1× the data-driven extent would
+	// bottom out near 1.25× and sink the dashed baseline toward the
+	// bottom edge.
+	memStep, memTop := axisScale(math.Max(memMax*1.1, 2.5))
 	yLat := func(v float64) float64 { return float64(plotBottom) - v/latTop*float64(plotH) }
 	// The memory axis runs inverted, 0× at the top: latency and memory
 	// ratios are correlated, so with both axes anchored at the bottom
@@ -470,9 +472,8 @@ func renderChart(b *strings.Builder, xl xGeometry, plotTop int, baseline string,
 
 	// Axis captions. Both axes share the ink ColorAxisMem so neither
 	// side reads as a library color; circle strokes stay ink to bind
-	// them to the B/op axis, trend lines carry library colors. The ×
-	// suffix marks the values as ratios against the baseline rather
-	// than absolutes.
+	// them to the B/op axis. The × suffix marks the values as ratios
+	// against the baseline rather than absolutes.
 	fmt.Fprintf(b, `  <text x="%d" y="%d" class="axis-cap" fill="%s" text-anchor="start">latency ×</text>`+"\n",
 		x0, plotTop-8, ColorAxisMem)
 	fmt.Fprintf(b, `  <text x="%d" y="%d" class="axis-cap" fill="%s" text-anchor="end">B/op × (0 top)</text>`+"\n",
@@ -516,49 +517,25 @@ func renderChart(b *strings.Builder, xl xGeometry, plotTop int, baseline string,
 	fmt.Fprintf(b, `  <line x1="%d" y1="%d" x2="%d" y2="%d" stroke="%s" stroke-width="1.5"/>`+"\n",
 		x0, plotBottom, x1, plotBottom, ColorDim)
 
-	// Memory trend lines per library across payload slots, each in its
-	// own library color. The baseline's circles all sit at exactly 1×;
-	// the dashed line through them doubles as the memory baseline and
-	// paints first so the other lines stay clear of it.
-	var libs []string
-	seen := make(map[string]bool)
-	for _, g := range sc.Groups {
-		for _, p := range g.Points {
-			if !seen[p.Lib] {
-				seen[p.Lib] = true
-				libs = append(libs, p.Lib)
+	// Memory baseline: the dashed line through the baseline's circles,
+	// all at exactly 1×, pokes past the right axis and carries a compact
+	// annotation there. It replaces the plain 1× tick at the same
+	// height. Points across payload slots are otherwise unrelated, so
+	// no other library gets a connecting line.
+	var baseCoords []string
+	for gi, g := range sc.Groups {
+		for pi, p := range g.Points {
+			if p.Lib == baseline && !math.IsNaN(p.Mem) {
+				baseCoords = append(baseCoords, fmt.Sprintf("%.1f,%.1f", xl.barCenter(gi, pi), yMem(p.Mem)))
 			}
 		}
 	}
-	memCoords := func(lib string) []string {
-		var coords []string
-		for gi, g := range sc.Groups {
-			for pi, p := range g.Points {
-				if p.Lib == lib && !math.IsNaN(p.Mem) {
-					coords = append(coords, fmt.Sprintf("%.1f,%.1f", xl.barCenter(gi, pi), yMem(p.Mem)))
-				}
-			}
-		}
-		return coords
-	}
-	if coords := memCoords(baseline); len(coords) >= 1 {
-		// The line pokes past the right axis and carries a compact
-		// annotation there identifying the memory baseline. It replaces
-		// the plain 1× tick at the same height.
-		coords = append(coords, fmt.Sprintf("%.1f,%.1f", float64(x1)+6, yMem(1)))
+	if len(baseCoords) >= 1 {
+		baseCoords = append(baseCoords, fmt.Sprintf("%.1f,%.1f", float64(x1)+6, yMem(1)))
 		fmt.Fprintf(b, `  <polyline points="%s" fill="none" stroke="%s" stroke-width="1.2" stroke-dasharray="4 3" opacity="0.7"/>`+"\n",
-			strings.Join(coords, " "), LibraryColor(baseline))
+			strings.Join(baseCoords, " "), LibraryColor(baseline))
 		fmt.Fprintf(b, `  <text x="%d" y="%.1f" font-size="9.5" font-weight="600" fill="%s" text-anchor="start">1× B/op</text>`+"\n",
 			x1+10, yMem(1)+3.5, ColorAxisMem)
-	}
-	for _, lib := range libs {
-		if lib == baseline {
-			continue
-		}
-		if coords := memCoords(lib); len(coords) >= 2 {
-			fmt.Fprintf(b, `  <polyline points="%s" fill="none" stroke="%s" stroke-width="1.5" opacity="0.5"/>`+"\n",
-				strings.Join(coords, " "), LibraryColor(lib))
-		}
 	}
 
 	// Latency bars with their value labels. Each non-baseline bar is the

@@ -4,8 +4,8 @@ Velox is a high-performance JSON library for Go.
 
 ## Performance
 
-![](docs/benchmarks/linux-amd64/unmarshal-2.svg)
-![](docs/benchmarks/linux-amd64/marshal-2.svg)
+![](docs/benchmarks/linux-amd64/unmarshal-3.svg)
+![](docs/benchmarks/linux-amd64/marshal-3.svg)
 
 [docs/benchmarks](docs/benchmarks).
 

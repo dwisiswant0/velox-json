@@ -13,9 +13,9 @@ import (
 
 // BenchResult holds a single benchmark measurement.
 type BenchResult struct {
-	Name         string  // full benchmark name (e.g. "Benchmark_Marshal_Tiny_Sonic-16")
-	Group        string  // dataset group (e.g. "Marshal_Tiny")
-	Library      string  // library name (e.g. "Sonic", "GoJSON", "Velox")
+	Name         string  // full benchmark name (e.g. "Benchmark_Marshal_Small_Velox-16")
+	Group        string  // dataset group (e.g. "Marshal_Small")
+	Library      string  // library name (e.g. "Velox", "GoJSON", "Sonic")
 	NsOp         float64 // nanoseconds per operation
 	BOp          float64 // bytes allocated per operation
 	AllocsOp     float64 // allocations per operation
@@ -109,7 +109,7 @@ var benchLineRe = regexp.MustCompile(
 // metaLineRe matches goos/goarch/cpu lines.
 var metaLineRe = regexp.MustCompile(`^(goos|goarch|cpu|pkg):\s+(.+)`)
 
-// splitBenchName splits "Benchmark_Marshal_Tiny_Sonic" into ("Marshal_Tiny", "Sonic").
+// splitBenchName splits "Benchmark_Marshal_Small_Velox" into ("Marshal_Small", "Velox").
 // It tries known library suffixes first, then falls back to the last "_"-separated segment.
 func splitBenchName(name string) (group, library string) {
 	// Strip "Benchmark_" prefix

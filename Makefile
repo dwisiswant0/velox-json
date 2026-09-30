@@ -294,7 +294,7 @@ bench-build:
 	cd benchmark && GOOS=$(GOOS) GOARCH=$(GOARCH) go test -c -o ../$(BENCH_BIN) .
 
 benchviz: bench-build
-	bash scripts/benchviz.sh -b $(BENCH_BIN) -d '$(BENCHVIZ_DIR)' -s '$(BENCHVIZ_SUITES)' \
+	@bash scripts/benchviz.sh -b $(BENCH_BIN) -d '$(BENCHVIZ_DIR)' -s '$(BENCHVIZ_SUITES)' \
 		-t $(BENCHVIZ_TIME) -c $(BENCHVIZ_COUNT) --skip '$(BENCHVIZ_SKIP)' \
 		$(if $(BENCHVIZ_LIBS),-l '$(BENCHVIZ_LIBS)');
 

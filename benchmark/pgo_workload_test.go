@@ -62,7 +62,6 @@ func pgoRunWorkload(b *testing.B, steps []func() error) {
 
 func Benchmark_PGOWorkload_Full(b *testing.B) {
 	pgoRunWorkload(b, []func() error{
-		pgoStep(loadTinyValue(), pgoMarshalFull),
 		pgoStep(loadSmallValue(), pgoMarshalFull),
 		pgoStep(loadMediumValue(), pgoMarshalFull),
 		pgoStep(loadEscapeHeavyValue(), pgoMarshalFull),
@@ -80,7 +79,6 @@ func Benchmark_PGOWorkload_Full(b *testing.B) {
 
 func Benchmark_PGOWorkload_Compact(b *testing.B) {
 	pgoRunWorkload(b, []func() error{
-		pgoStep(loadTinyValue(), pgoMarshalCompact),
 		pgoStep(loadSmallValue(), pgoMarshalCompact),
 		pgoStep(loadMediumValue(), pgoMarshalCompact),
 		pgoStep(loadEscapeHeavyValue(), pgoMarshalCompact),

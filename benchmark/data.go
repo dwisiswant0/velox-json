@@ -20,7 +20,7 @@ func mustCorpus(name string) []byte {
 }
 
 var (
-	TinyJSON        = mustCorpus("tiny")
+	TinyJSON        = mustCorpus("tiny") // payload for b0_overhead_test.go probes
 	SmallJSON       = mustCorpus("small")
 	MediumJSON      = mustCorpus("medium")
 	EscapeHeavyJSON = mustCorpus("escape_heavy")
@@ -49,9 +49,6 @@ var SmallMapAnyBytes = []byte(SmallMapAnyJSON)
 
 // Compact (whitespace-stripped) versions of all JSON test data, lazily initialized.
 var (
-	tinyCompactOnce sync.Once
-	tinyCompactData []byte
-
 	smallCompactOnce sync.Once
 	smallCompactData []byte
 
@@ -67,11 +64,6 @@ var (
 	mediumCompactOnce sync.Once
 	mediumCompactData []byte
 )
-
-func LoadTinyCompactJSON() []byte {
-	tinyCompactOnce.Do(func() { tinyCompactData = compact(TinyJSON) })
-	return tinyCompactData
-}
 
 func LoadSmallCompactJSON() []byte {
 	smallCompactOnce.Do(func() { smallCompactData = compact(SmallJSON) })
@@ -240,4 +232,77 @@ func buildThirdBufNDJSON() []byte {
 		buf.WriteByte('\n')
 	}
 	return buf.Bytes()
+}
+
+// =============================================================================
+// LLM API: a request and a response of the Chat Completions API
+//
+// The JSON of the payloads is built by the corpus ( see corpus/llm_payload.go ),
+// indented there as the other datasets are. What is measured is the compact
+// form, which is what an API sends, and the values are decoded from it by the
+// standard library on the first use, as the values of the other datasets are.
+// =============================================================================
+
+var (
+	llmToolsJSONOnce sync.Once
+	llmToolsJSONData []byte
+	llmToolsValueOne sync.Once
+	llmToolsValue    ChatCompletionRequest
+
+	llmRequestJSONOnce sync.Once
+	llmRequestJSONData []byte
+	llmRequestValueOne sync.Once
+	llmRequestValue    ChatCompletionRequest
+
+	llmResponseJSONOnce sync.Once
+	llmResponseJSONData []byte
+	llmResponseValueOne sync.Once
+	llmResponseValue    ChatCompletionResponse
+)
+
+func LoadLLMToolsJSON() []byte {
+	llmToolsJSONOnce.Do(func() { llmToolsJSONData = compact(corpus.LLMToolsJSON()) })
+	return llmToolsJSONData
+}
+
+func LoadLLMRequestJSON() []byte {
+	llmRequestJSONOnce.Do(func() { llmRequestJSONData = compact(corpus.LLMRequestJSON()) })
+	return llmRequestJSONData
+}
+
+func LoadLLMResponseJSON() []byte {
+	llmResponseJSONOnce.Do(func() { llmResponseJSONData = compact(corpus.LLMResponseJSON()) })
+	return llmResponseJSONData
+}
+
+// loadLLMToolsValue is the value of the definitions of the five tools of the
+// session: a map[string]JSONSchema per tool, and nothing else.
+func loadLLMToolsValue() *ChatCompletionRequest {
+	llmToolsValueOne.Do(func() {
+		if err := json.Unmarshal(LoadLLMToolsJSON(), &llmToolsValue); err != nil {
+			panic("load llm_tools: " + err.Error())
+		}
+	})
+	return &llmToolsValue
+}
+
+// loadLLMRequestValue is the value of one turn of the session: the tools, five
+// calls and their results, one of which is a source file of 15 KB.
+func loadLLMRequestValue() *ChatCompletionRequest {
+	llmRequestValueOne.Do(func() {
+		if err := json.Unmarshal(LoadLLMRequestJSON(), &llmRequestValue); err != nil {
+			panic("load llm_request: " + err.Error())
+		}
+	})
+	return &llmRequestValue
+}
+
+// loadLLMResponseValue is the value of the answer of the model.
+func loadLLMResponseValue() *ChatCompletionResponse {
+	llmResponseValueOne.Do(func() {
+		if err := json.Unmarshal(LoadLLMResponseJSON(), &llmResponseValue); err != nil {
+			panic("load llm_response: " + err.Error())
+		}
+	})
+	return &llmResponseValue
 }

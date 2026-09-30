@@ -5,8 +5,8 @@ go 1.27
 require (
 	buf.build/go/hyperpb v0.1.3
 	github.com/apache/fory/go/fory v1.5.0
-	github.com/bytedance/sonic v1.15.3-0.20260730064818-2a36d6da63e2
-	github.com/goccy/go-json v0.10.5
+	github.com/bytedance/sonic v1.15.4
+	github.com/goccy/go-json v0.11.2-0.20260929041521-d7bede4aba27
 	github.com/klauspost/compress v1.18.4
 	github.com/planetscale/vtprotobuf v0.6.0
 	github.com/velox-io/json v0.0.0

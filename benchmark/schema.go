@@ -1,10 +1,13 @@
 package benchmark
 
+import "dev.local/benchmark/corpus"
+
 // =============================================================================
 // Struct Types
 // =============================================================================
 
 // --- Tiny: flat struct with basic types ---
+// Payload for the framework periphery-cost probes in b0_overhead_test.go.
 
 type Tiny struct {
 	Bool    bool    `json:"bool"`
@@ -472,3 +475,20 @@ type MediumGravatarAvatar struct {
 // MediumCompany is a placeholder: the sample payload has company=null, so the
 // concrete fields are not yet known. Add them when a non-null sample appears.
 type MediumCompany struct{}
+
+// =============================================================================
+// LLM API: the types of the payloads of the LLM API
+// =============================================================================
+
+type (
+	JSONSchema             = corpus.JSONSchema
+	ChatCompletionRequest  = corpus.ChatCompletionRequest
+	ChatCompletionResponse = corpus.ChatCompletionResponse
+	ChatCompletionMessage  = corpus.ChatCompletionMessage
+	ChatTool               = corpus.ChatTool
+	ChatFunctionDefinition = corpus.ChatFunctionDefinition
+	ToolCall               = corpus.ToolCall
+	FunctionCall           = corpus.FunctionCall
+	Choice                 = corpus.Choice
+	Usage                  = corpus.Usage
+)
