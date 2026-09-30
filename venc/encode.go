@@ -181,26 +181,32 @@ func releaseEncodeState(es *encodeState) {
 func (es *encodeState) reclaim(bufFull bool, produced int) error {
 	if es.mode == modeBuffer {
 		// Buffer: grow whenever the last run hit BUF_FULL (the tail was too
-		// small for its next reservation) or the window is exactly full (a
-		// yield handler may have appended up to cap).
-		if bufFull || len(es.buf) == cap(es.buf) {
+		// small for its next reservation) or the window is empty (a yield
+		// handler may have appended into the slack).
+		if bufFull || es.windowRoom() <= 0 {
 			es.grow()
 		}
 		return nil
 	}
 
 	// Stream: flush committed bytes to reopen the window, then grow only when
-	// flushing cannot help: the window is still full after flushing, or the VM
-	// stalled on a reservation larger than the whole (empty) window.
+	// flushing cannot help: the window is still empty after flushing, or the
+	// VM stalled on a reservation larger than the whole window.
 	if len(es.buf) > 0 {
 		if err := es.stream.flush(es); err != nil {
 			return err
 		}
 	}
-	if len(es.buf) == cap(es.buf) || (bufFull && produced == 0) {
+	if es.windowRoom() <= 0 || (bufFull && produced == 0) {
 		es.grow()
 	}
 	return nil
+}
+
+// windowRoom is the size of the VM window es.buf currently offers: the free
+// capacity minus the vjWindowSlack tail withheld for vector overhang.
+func (es *encodeState) windowRoom() int {
+	return cap(es.buf) - len(es.buf) - vjWindowSlack
 }
 
 func (es *encodeState) growBuf(hint int) {

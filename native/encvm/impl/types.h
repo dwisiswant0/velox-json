@@ -10,6 +10,11 @@
 
 #define VJ_MAX_STACK_DEPTH 64
 
+/* Writable bytes the Go side keeps past ctx->buf_end. A vector tail store
+ * writes 16 bytes of which at least one is payload inside the reservation,
+ * so it overhangs by at most 15. Must match Go vjWindowSlack. */
+#define VJ_WINDOW_SLACK 16
+
 /* ================================================================
  *  Debug Trace Ring Buffer
  *
@@ -557,9 +562,11 @@ _Static_assert(offsetof(VjIfaceCacheEntry, flags) == 25, "VjIfaceCacheEntry.flag
 typedef struct VjExecCtx {
   /* ===== Cache Line 0: Hot VM Registers (0-63) ===== */
 
-  /* Output buffer */
+  /* Output buffer. Reservations are checked against buf_end, but a 16-byte
+   * vector tail store may overhang the reserved bytes by up to 15; the Go
+   * side owns VJ_WINDOW_SLACK writable bytes past buf_end to absorb it. */
   uint8_t *buf_cur;  /*   0: current write position */
-  uintptr_t buf_end; /*   8: one past last byte (not a GC ptr) */
+  uintptr_t buf_end; /*   8: one past last reservable byte (not a GC ptr) */
 
   /* Program counter (ops_ptr + pc form the "instruction pointer") */
   const uint8_t *ops_ptr; /*  16: &Blueprint.Ops[0] (byte stream) */

@@ -159,8 +159,8 @@ INLINE uint8_t *vj_tw_write_indent(uint8_t *buf, const VjSwissIndent *ind, int32
  * escape-free shape. A variable-length memcpy lowers to a libc call, which
  * is slower than the inline NEON tail; every string word now takes this
  * path, so it must stay call-free. The 16-byte tail store overlaps past
- * the body by the same amount the escape writer's tail does; the window
- * contract covers it identically. */
+ * the body by the same amount the escape writer's tail does; both land in
+ * the VJ_WINDOW_SLACK bytes past buf_end. */
 INLINE uint32_t vj_tw_copy_verbatim(uint8_t *buf, const uint8_t *sp, uint32_t len) {
   uint32_t i = 0;
   while (i + 16 <= len) {

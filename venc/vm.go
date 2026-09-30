@@ -273,6 +273,12 @@ const VJ_MAX_STACK_DEPTH = 64 //nolint:revive
 
 const maxIndentDepth = VJ_MAX_STACK_DEPTH
 
+// vjWindowSlack is the tail of es.buf withheld from the VM window. Native
+// reservations are checked against BufEnd, while a 16-byte vector tail store
+// may overhang them by up to 15 bytes; the slack keeps that overhang inside
+// the buffer's own backing array. Must match native VJ_WINDOW_SLACK.
+const vjWindowSlack = 16
+
 // VjExecCtx matches the native 2152-byte exec ABI. Field order and offsets are fixed.
 type VjExecCtx struct {
 	// Hot registers.

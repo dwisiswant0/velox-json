@@ -120,11 +120,12 @@ func (es *encodeState) execVMLoop(ctx *VjExecCtx, bp *Blueprint, vmExec func(uns
 	bufFull := false
 	produced := 0
 	for {
-		// The write window is es.buf[len:cap]. The previous iteration's
-		// bottom-of-loop reclaim guarantees it is non-empty, so reclaim is not
-		// polled here on the hot path. Only an already-full buffer at entry
-		// (AppendMarshal into a full dst) needs a pre-run reclaim.
-		if len(es.buf) == cap(es.buf) {
+		// The write window is es.buf[len:cap-vjWindowSlack]. The previous
+		// iteration's bottom-of-loop reclaim guarantees it is non-empty, so
+		// reclaim is not polled here on the hot path. Only a buffer without
+		// room at entry (AppendMarshal into a tight dst) needs a pre-run
+		// reclaim.
+		if es.windowRoom() <= 0 {
 			if err := es.reclaim(bufFull, produced); err != nil {
 				return err
 			}
@@ -133,7 +134,7 @@ func (es *encodeState) execVMLoop(ctx *VjExecCtx, bp *Blueprint, vmExec func(uns
 		workBuf := es.buf[len(es.buf):cap(es.buf)]
 		bufStart := uintptr(unsafe.Pointer(&workBuf[0]))
 		ctx.BufCur = bufStart
-		ctx.BufEnd = bufStart + uintptr(len(workBuf))
+		ctx.BufEnd = bufStart + uintptr(len(workBuf)-vjWindowSlack)
 
 		es.callvm(vmExec, ctx)
 
