@@ -380,18 +380,19 @@ func (es *encodeState) handleFallbackYield(ctx *VjExecCtx, bp *Blueprint) error 
 		return es.unfoldFromYield(ctx, fb, isFirst)
 	}
 
-	fieldPtr := unsafe.Add(ctx.CurBase, fb.Offset)
+	fieldBase := ctx.CurBase
 	if len(fb.PtrPath) > 0 {
 		// Promoted across an embedded pointer, so the offset is relative to the
 		// pointee the hops reach. A nil hop means the field has no storage, so
 		// the key is skipped entirely, exactly as the interpreter does.
-		fieldBase, ok := resolveFieldBase(ctx.CurBase, fb.PtrPath)
+		hopBase, ok := resolveFieldBase(ctx.CurBase, fb.PtrPath)
 		if !ok {
 			ctx.PC += 8
 			return nil
 		}
-		fieldPtr = unsafe.Add(fieldBase, fb.Offset)
+		fieldBase = hopBase
 	}
+	fieldPtr := unsafe.Add(fieldBase, fb.Offset)
 
 	// A Stream field runs the OnWrite producer: its omitempty and key commit
 	// lazily on the first element, so it must bypass the generic prefix logic
@@ -451,15 +452,16 @@ func (es *encodeState) handleValueYield(ctx *VjExecCtx, bp *Blueprint) error {
 		return fmt.Errorf("venc: value yield at PC=%d with no fallback info", ctx.PC)
 	}
 
-	fieldPtr := unsafe.Add(ctx.CurBase, fb.Offset)
+	fieldBase := ctx.CurBase
 	if len(fb.PtrPath) > 0 {
-		fieldBase, ok := resolveFieldBase(ctx.CurBase, fb.PtrPath)
+		hopBase, ok := resolveFieldBase(ctx.CurBase, fb.PtrPath)
 		if !ok {
 			ctx.PC += 8
 			return nil
 		}
-		fieldPtr = unsafe.Add(fieldBase, fb.Offset)
+		fieldBase = hopBase
 	}
+	fieldPtr := unsafe.Add(fieldBase, fb.Offset)
 
 	if !isFirst {
 		es.buf = append(es.buf, ',')
@@ -496,15 +498,16 @@ func (es *encodeState) handleValueSpreadYield(ctx *VjExecCtx, bp *Blueprint) err
 // The first latch is consumed only when a member is written; an empty or
 // zero Value leaves it untouched, mirroring the native walk.
 func (es *encodeState) spreadFromYield(ctx *VjExecCtx, bp *Blueprint, fb *fbInfo, isFirst bool) error {
-	fieldPtr := unsafe.Add(ctx.CurBase, fb.Offset)
+	fieldBase := ctx.CurBase
 	if len(fb.PtrPath) > 0 {
-		fieldBase, ok := resolveFieldBase(ctx.CurBase, fb.PtrPath)
+		hopBase, ok := resolveFieldBase(ctx.CurBase, fb.PtrPath)
 		if !ok {
 			ctx.PC += 8
 			return nil
 		}
-		fieldPtr = unsafe.Add(fieldBase, fb.Offset)
+		fieldBase = hopBase
 	}
+	fieldPtr := unsafe.Add(fieldBase, fb.Offset)
 
 	first := isFirst
 	if err := es.appendTapeSpread((*value.Value)(fieldPtr), &first); err != nil {
@@ -521,15 +524,16 @@ func (es *encodeState) spreadFromYield(ctx *VjExecCtx, bp *Blueprint, fb *fbInfo
 // mirror of the body-only Blueprint. Field order, omitempty, keys, and the
 // comma state follow emitStructBody's compiled form.
 func (es *encodeState) unfoldFromYield(ctx *VjExecCtx, fb *fbInfo, isFirst bool) error {
-	fieldPtr := unsafe.Add(ctx.CurBase, fb.Offset)
+	fieldBase := ctx.CurBase
 	if len(fb.PtrPath) > 0 {
-		fieldBase, ok := resolveFieldBase(ctx.CurBase, fb.PtrPath)
+		hopBase, ok := resolveFieldBase(ctx.CurBase, fb.PtrPath)
 		if !ok {
 			ctx.PC += 8
 			return nil
 		}
-		fieldPtr = unsafe.Add(fieldBase, fb.Offset)
+		fieldBase = hopBase
 	}
+	fieldPtr := unsafe.Add(fieldBase, fb.Offset)
 
 	typePtr := *(*unsafe.Pointer)(fieldPtr)
 	if typePtr == nil {
@@ -556,14 +560,15 @@ func (es *encodeState) unfoldFromYield(ctx *VjExecCtx, fb *fbInfo, isFirst bool)
 		fi := &si.Fields[i]
 		// The offset is relative to the base the hops reach for promoted
 		// fields; a nil hop means no storage, and the field is omitted.
-		fptr := unsafe.Add(dataPtr, uintptr(fi.Offset))
+		fbase := dataPtr
 		if len(fi.PtrPath) > 0 {
 			hopBase, ok := resolveFieldBase(dataPtr, fi.PtrPath)
 			if !ok {
 				continue
 			}
-			fptr = unsafe.Add(hopBase, uintptr(fi.Offset))
+			fbase = hopBase
 		}
+		fptr := unsafe.Add(fbase, uintptr(fi.Offset))
 		if fi.TagFlags&EncTagFlagOmitZero != 0 && fi.OmitZeroFn != nil && fi.OmitZeroFn(fptr) {
 			continue
 		}

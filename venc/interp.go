@@ -670,18 +670,19 @@ func (es *encodeState) interp(ctx *VjExecCtx, bp *Blueprint, base unsafe.Pointer
 			if !ok {
 				return fmt.Errorf("venc: interp: opFallback at PC=%d with no fallback info", pc)
 			}
-			fieldPtr := unsafe.Add(base, fb.Offset)
+			fieldBase := base
 			if len(fb.PtrPath) > 0 {
 				// Promoted across an embedded pointer: the field lives inside a
 				// pointee. A nil hop means it has no storage at all, so the key
 				// is omitted entirely rather than written as null.
-				fieldBase, ok := resolveFieldBase(base, fb.PtrPath)
+				hopBase, ok := resolveFieldBase(base, fb.PtrPath)
 				if !ok {
 					pc += 8
 					continue
 				}
-				fieldPtr = unsafe.Add(fieldBase, fb.Offset)
+				fieldBase = hopBase
 			}
+			fieldPtr := unsafe.Add(fieldBase, fb.Offset)
 
 			// A Stream field runs the OnWrite producer with lazy member
 			// commitment; the generic omitempty and prefix logic below does

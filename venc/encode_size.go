@@ -91,7 +91,8 @@ func buildSizeStruct(ti *EncTypeInfo, depth int) func(ptr unsafe.Pointer) int {
 
 	type fieldSizer struct {
 		offset    uintptr
-		overhead  int // len(KeyBytes) + 1 (comma)
+		ptrPath   []typ.PtrHop // hops to the base offset is relative to
+		overhead  int          // len(KeyBytes) + 1 (comma)
 		sizeFn    func(ptr unsafe.Pointer) int
 		omitEmpty bool
 		isZeroFn  func(ptr unsafe.Pointer) bool
@@ -129,6 +130,7 @@ func buildSizeStruct(ti *EncTypeInfo, depth int) func(ptr unsafe.Pointer) int {
 			} else {
 				sizers = append(sizers, fieldSizer{
 					offset:    fi.Offset,
+					ptrPath:   fi.PtrPath,
 					overhead:  overhead + staticHint,
 					omitEmpty: omit,
 					isZeroFn:  fi.IsZeroFn,
@@ -159,6 +161,7 @@ func buildSizeStruct(ti *EncTypeInfo, depth int) func(ptr unsafe.Pointer) int {
 			fixed := overhead + fixedFieldSize
 			sizers = append(sizers, fieldSizer{
 				offset:    fi.Offset,
+				ptrPath:   fi.PtrPath,
 				overhead:  fixed,
 				omitEmpty: omit,
 				isZeroFn:  fi.IsZeroFn,
@@ -171,6 +174,7 @@ func buildSizeStruct(ti *EncTypeInfo, depth int) func(ptr unsafe.Pointer) int {
 		// Variable-size field (string, slice, map, struct, etc.)
 		sizers = append(sizers, fieldSizer{
 			offset:    fi.Offset,
+			ptrPath:   fi.PtrPath,
 			overhead:  overhead,
 			sizeFn:    fn,
 			omitEmpty: omit,
@@ -189,7 +193,15 @@ func buildSizeStruct(ti *EncTypeInfo, depth int) func(ptr unsafe.Pointer) int {
 		n := fixedTotal
 		for i := range sizers {
 			s := &sizers[i]
-			fieldPtr := unsafe.Add(ptr, s.offset)
+			base := ptr
+			if len(s.ptrPath) > 0 {
+				b, ok := resolveFieldBase(ptr, s.ptrPath)
+				if !ok {
+					continue // nil embedded pointer: the field is omitted
+				}
+				base = b
+			}
+			fieldPtr := unsafe.Add(base, s.offset)
 			if s.omitZero && s.ozFn != nil && s.ozFn(fieldPtr) {
 				continue // omitzero zero field → omitted entirely
 			}
