@@ -1175,14 +1175,11 @@ vj_op_array_begin: {
    *  Generic map[string]<value> encoding using C-native key iteration
    *  with VM-dispatched value body instructions.
    *
-   *  Requires a map whose element Go stores INLINE in the slot. This walk
-   *  addresses a value as group + elems_off + slot_idx * elem_stride and hands
-   *  that address to the value body, so an element Go keeps behind a pointer
-   *  (type larger than abi.MapMaxElemBytes) would be encoded from the pointer's
-   *  own bytes. Emission is gated on that Go-side: the layout probe declines such
-   *  a map, SlotSize stays 0, and canSwissMapIterInC routes it to the generic
-   *  iteration, which dereferences properly. Nothing here can tell the two apart,
-   *  since a stride is all this opcode receives.
+   *  A value is addressed as group + elems_off + slot_idx * elem_stride. An
+   *  element Go stores INLINE in the slot is encoded from that address; an
+   *  element Go keeps behind a pointer (type larger than abi.MapMaxElemBytes)
+   *  has the slot hold a *V, and VJ_OP_FLAG_INDIRECT_ELEM on both opcodes
+   *  makes this walk dereference the slot once before running the value body.
    *
    *  MAP_STR_ITER (long, 16 bytes):
    *    operand_a: interleaved=slot_size, split=elem_stride
@@ -1195,6 +1192,7 @@ vj_op_array_begin: {
 
 vj_op_map_str_iter: {
   const VjOpExt *ext = VJ_OP_EXT(op);
+  int indirect       = op->flags & VJ_OP_FLAG_INDIRECT_ELEM;
   int32_t operand    = ext->operand_a;
   int32_t body_len   = ext->operand_b;
 
@@ -1223,6 +1221,9 @@ vj_op_map_str_iter: {
     }
     const GoString *k      = (const GoString *)slot.key_ptr;
     const uint8_t *val_ptr = slot.group + elems_off + f->map.slot_idx * elem_stride;
+    if (indirect) {
+      val_ptr = *(const uint8_t *const *)val_ptr;
+    }
 
     {
       int ipad      = indent_step ? (1 + indent_prefix_len + indent_depth * indent_step) : 0;
@@ -1275,13 +1276,6 @@ vj_op_map_str_iter: {
       VM_JUMP_BYTES(16 + body_len + 16);
     }
 
-    VM_CHECK(op->key_len + 1 + 1 + VM_INDENT_PAD(indent_depth) + VM_KEY_SPACE + VM_INDENT_PAD(indent_depth + 1));
-    VM_WRITE_KEY();
-    VM_TRACE_KEY("MAP_STR_ITER");
-    *buf++ = '{';
-    VM_INDENT_INC();
-    VM_WRITE_INDENT();
-
     if (UNLIKELY(VJ_ST_GET_STACK_DEPTH(vmstate) >= VJ_MAX_STACK_DEPTH)) {
       VM_SAVE_AND_RETURN(VJ_EXIT_STACK_OVERFLOW);
     }
@@ -1301,13 +1295,30 @@ vj_op_map_str_iter: {
     VjSwissSlot slot       = vj_swiss_next_full_slot(m, key_stride, group_size, frame);
     const GoString *k      = (const GoString *)slot.key_ptr;
     const uint8_t *val_ptr = slot.group + elems_off + frame->map.slot_idx * elem_stride;
+    if (indirect) {
+      val_ptr = *(const uint8_t *const *)val_ptr;
+    }
 
-    /* Write first key (no comma) */
+    /* The opening (map key, '{', first entry key) is one reservation. On
+     * BUF_FULL nothing has been written and the iterator frame is
+     * unconsumed, so pop it and let the re-entry redo the whole opening:
+     * the resume flag stays clear because no '{' is out. */
     {
       int key_space = indent_step ? 1 : 0;
-      int64_t need  = 2 + (k->len * 6) + 1 + key_space;
-      VM_CHECK(need);
+      int64_t need  = op->key_len + 1 + 1 + VM_INDENT_PAD(indent_depth) + key_space +
+                      VM_INDENT_PAD(indent_depth + 1) + 2 + (k->len * 6) + 1 + key_space;
+      if (UNLIKELY(buf + need > bend)) {
+        VJ_ST_DEC_STACK_DEPTH(vmstate);
+        VM_SAVE_AND_RETURN(VJ_EXIT_BUF_FULL);
+      }
     }
+
+    VM_WRITE_KEY();
+    VM_TRACE_KEY("MAP_STR_ITER");
+    *buf++ = '{';
+    VM_INDENT_INC();
+    VM_WRITE_INDENT();
+
 #ifdef VJ_FAST_STRING_ESCAPE
     buf += VJ_ESCAPE_STRING_FAST_DISPATCH(buf, k->ptr, k->len);
 #else
@@ -1347,6 +1358,7 @@ map_str_iter_done_resume: {
 
 vj_op_map_str_iter_end: {
   const VjOpExt *ext = VJ_OP_EXT(op);
+  int indirect       = op->flags & VJ_OP_FLAG_INDIRECT_ELEM;
   int32_t operand    = ext->operand_b;
 
   /* Derive layout (same as MAP_STR_ITER). */
@@ -1371,6 +1383,9 @@ vj_op_map_str_iter_end: {
     }
     const GoString *k      = (const GoString *)slot.key_ptr;
     const uint8_t *val_ptr = slot.group + elems_off + frame->map.slot_idx * elem_stride;
+    if (indirect) {
+      val_ptr = *(const uint8_t *const *)val_ptr;
+    }
 
     /* Check buffer space. On BUF_FULL, frame->map.{dir,group,slot}_idx are
      * already the current-slot indices; the resume path re-scans from there. */

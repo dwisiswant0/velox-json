@@ -365,52 +365,55 @@ func verifySmallMapPrewire() bool {
 //   - interleaved (KVKVKVKV): actual slot size (key+elem+padding)
 //   - split (KKKKVVVV): elem stride (size of a single elem, aligned)
 //
-// It declines a map whose element Go stores behind a pointer, because there is no
-// inline element for a stride to describe. It also requires the large-map
-// layout guard: consumers stride over both small and large maps in C.
-func ProbeSwissMapSlotSize(mapType reflect.Type, valSize uintptr) (slotSize uintptr, ok bool) {
+// indirect reports a map whose element Go stores behind a pointer, so the slot
+// holds a *V. The striding formulas are unchanged: an interleaved slot is key
+// plus pointer and a split elems array holds one pointer per entry, so a
+// consumer only has to dereference the addressed slot once. Such a map is
+// assigned through MapAssign, the only entry point that performs the runtime's
+// indirect-element allocation; MapAssignFastStr hands back the pointer slot
+// itself. The probe also requires the large-map layout guard: consumers stride
+// over both small and large maps in C.
+func ProbeSwissMapSlotSize(mapType reflect.Type, valSize uintptr) (slotSize uintptr, indirect bool, ok bool) {
 	if !SwissMapLayoutOK || !SwissMapLargeLayoutOK {
-		return 0, false
+		return 0, false, false
 	}
 	if mapType.Key().Kind() != reflect.String {
-		return 0, false
+		return 0, false, false
 	}
-	// Above the element limit a slot holds a *V, so the stride the runtime reports
-	// is the pointer's, and a consumer stepping by it reads that pointer as if it
-	// were the value. Declining keeps such maps on the caller's own iteration,
-	// which dereferences properly.
-	//
-	// This must also come before the writes below: they clear valSize bytes
-	// through the address faststr returned, which for an indirect element is the
-	// pointer slot, so the clear would run past it and over the group.
-	if MapValueIsIndirect(valSize) {
-		return 0, false
-	}
+	indirect = MapValueIsIndirect(valSize)
 
 	mt := TypePtr(mapType)
 	layout := ReadMapLayout(mt)
 
 	mp := MakeMap(mt, 2, nil)
-	valPtr1 := MapAssignFastStr(mt, mp, "__gort_probe_1__")
-	for i := range valSize {
-		*(*byte)(unsafe.Add(valPtr1, i)) = 0
-	}
-	valPtr2 := MapAssignFastStr(mt, mp, "__gort_probe_2__")
-	for i := range valSize {
-		*(*byte)(unsafe.Add(valPtr2, i)) = 0
+	var valPtr1, valPtr2 unsafe.Pointer
+	if indirect {
+		k1 := "__gort_probe_1__"
+		valPtr1 = MapAssign(mt, mp, unsafe.Pointer(&k1))
+		k2 := "__gort_probe_2__"
+		valPtr2 = MapAssign(mt, mp, unsafe.Pointer(&k2))
+	} else {
+		valPtr1 = MapAssignFastStr(mt, mp, "__gort_probe_1__")
+		for i := range valSize {
+			*(*byte)(unsafe.Add(valPtr1, i)) = 0
+		}
+		valPtr2 = MapAssignFastStr(mt, mp, "__gort_probe_2__")
+		for i := range valSize {
+			*(*byte)(unsafe.Add(valPtr2, i)) = 0
+		}
 	}
 
 	used := *(*uint64)(mp)
 	if used != 2 {
-		return 0, false
+		return 0, false, false
 	}
 	dirLen := *(*int64)(unsafe.Add(mp, 24))
 	if dirLen != 0 {
-		return 0, false
+		return 0, false, false
 	}
 	dirPtr := *(*unsafe.Pointer)(unsafe.Add(mp, 16))
 	if dirPtr == nil {
-		return 0, false
+		return 0, false, false
 	}
 
 	ctrls := *(*uint64)(dirPtr)
@@ -423,16 +426,25 @@ func ProbeSwissMapSlotSize(mapType reflect.Type, valSize uintptr) (slotSize uint
 		keyPtr := unsafe.Add(dirPtr, layout.KeysOff+uintptr(i)*layout.KeyStride)
 		key := *(*string)(keyPtr)
 		if key != "__gort_probe_1__" && key != "__gort_probe_2__" {
-			return 0, false
+			return 0, false, false
+		}
+		if indirect {
+			// The slot holds a *V. The addressed pointer must be the one
+			// MapAssign stored, which pins ElemsOff and ElemStride for the
+			// indirect layout the same way the key scan pins the key side.
+			elem := *(*unsafe.Pointer)(unsafe.Add(dirPtr, layout.ElemsOff+uintptr(i)*layout.ElemStride))
+			if elem != valPtr1 && elem != valPtr2 {
+				return 0, false, false
+			}
 		}
 		found++
 	}
 	if found != 2 {
-		return 0, false
+		return 0, false, false
 	}
 
 	if SwissMapSplitGroup {
-		return layout.ElemStride, true
+		return layout.ElemStride, indirect, true
 	}
-	return layout.KeyStride, true
+	return layout.KeyStride, indirect, true
 }

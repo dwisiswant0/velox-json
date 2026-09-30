@@ -33,6 +33,6 @@ func mapsIterNext(it *mapsIter) { gort.MapsIterNext(it) }
 
 type GoMapIterator = gort.GoMapIterator
 
-func probeSwissMapSlotSize(mapType reflect.Type, valSize uintptr) (slotSize uintptr, ok bool) {
+func probeSwissMapSlotSize(mapType reflect.Type, valSize uintptr) (slotSize uintptr, indirect bool, ok bool) {
 	return gort.ProbeSwissMapSlotSize(mapType, valSize)
 }

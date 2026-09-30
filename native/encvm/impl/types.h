@@ -403,7 +403,8 @@ typedef struct VjOpHdr {
 } VjOpHdr;
 
 /* VjOpHdr.flags bits */
-#define VJ_OP_FLAG_IFACE_FIELD 0x01 /* OP_UNFOLD: field is a non-empty interface */
+#define VJ_OP_FLAG_IFACE_FIELD   0x01 /* OP_UNFOLD: field is a non-empty interface */
+#define VJ_OP_FLAG_INDIRECT_ELEM 0x02 /* OP_MAP_STR_ITER/_END: map slot holds a *V */
 
 _Static_assert(sizeof(VjOpHdr) == 8, "VjOpHdr must be 8 bytes");
 _Static_assert(offsetof(VjOpHdr, key_len) == 2, "VjOpHdr.key_len offset");

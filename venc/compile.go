@@ -689,7 +689,11 @@ func emitMapSwiss(b *irBuilder, ti *EncTypeInfo, fc fieldContext) {
 
 func emitMapSwissIter(b *irBuilder, ti *EncTypeInfo, fc fieldContext) {
 	mi := ti.ResolveMap()
-	slotSize := swissMapSlotSize(mi)
+	stride := int32(mi.SlotSize)
+	var flags uint8
+	if mi.Indirect {
+		flags = opFlagIndirectElem
+	}
 
 	bodyLabel := b.allocLabel()
 	afterLabel := b.allocLabel()
@@ -699,7 +703,8 @@ func emitMapSwissIter(b *irBuilder, ti *EncTypeInfo, fc fieldContext) {
 		KeyLen:   fc.KeyLen,
 		KeyOff:   fc.KeyOff,
 		FieldOff: uint16(fc.FieldOff),
-		OperandA: slotSize,
+		Flags:    flags,
+		OperandA: stride,
 		Target:   afterLabel,
 		Fallback: &fbInfo{TI: ti, Offset: fc.FieldOff},
 	})
@@ -711,8 +716,9 @@ func emitMapSwissIter(b *irBuilder, ti *EncTypeInfo, fc fieldContext) {
 	b.defineLabel(afterLabel)
 	b.emit(IRInst{
 		Op:       opMapStrIterEnd,
+		Flags:    flags,
 		LoopBack: bodyLabel,
-		OperandB: slotSize,
+		OperandB: stride,
 	})
 }
 
@@ -1089,15 +1095,10 @@ func canSwissMapInC(variant typ.MapVariant) bool {
 }
 
 // canSwissMapIterInC reports whether MAP_STR_ITER can walk this map. That opcode
-// addresses each value by stride, so it needs an element Go stores inline; a
-// SlotSize of zero is how the layout probe reports that no such stride exists,
-// which includes an element large enough that Go keeps it behind a pointer.
+// addresses each value by stride, so it needs a stride the layout probe
+// confirmed; a SlotSize of zero reports that none exists.
 func canSwissMapIterInC(mi *EncMapInfo) bool {
 	return mi.IsStringKey && mi.SlotSize != 0
-}
-
-func swissMapSlotSize(mi *EncMapInfo) int32 {
-	return int32(mi.SlotSize)
 }
 
 func swissMapOpcode(variant typ.MapVariant) uint16 {

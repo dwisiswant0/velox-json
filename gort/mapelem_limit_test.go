@@ -9,21 +9,17 @@ import (
 )
 
 // Go stores a map element behind a pointer once its type exceeds
-// abi.MapMaxElemBytes, so the slot holds a *V rather than the V. A stride cannot
-// describe such an element, and the two things this package offers for stepping
-// over slots directly, the layout probe and MapAssignFastStr, are both invalid
-// for it. These tests pin the boundary at its source, where the size is the only
-// input, so a consumer does not have to reproduce the rule to stay correct.
+// abi.MapMaxElemBytes, so the slot holds a *V rather than the V. The layout
+// probe accepts such a map and reports the indirection, letting a consumer
+// stride the slots and deref once; MapAssignFastStr remains invalid for it,
+// because it never performs the runtime's indirect-element allocation. These
+// tests pin the boundary at its source, where the size is the only input, so
+// a consumer does not have to reproduce the rule to stay correct.
 
-// TestProbeSwissMapSlotSizeDeclinesIndirectElem pins that the probe refuses a map
-// whose element is stored indirectly.
-//
-// Two things go wrong if it does not. The stride it would report is the pointer's,
-// so a consumer stepping by it renders or reads the *V as if it were the V; and
-// the probe's own zeroing writes valSize bytes through the address the assignment
-// returned, which for an indirect element is an 8-byte pointer slot, so the clear
-// runs past it and over the group.
-func TestProbeSwissMapSlotSizeDeclinesIndirectElem(t *testing.T) {
+// TestProbeSwissMapSlotSizeMarksIndirectElem pins that the probe accepts a map
+// whose element is stored indirectly and reports the indirection, and that an
+// element at the limit stays inline.
+func TestProbeSwissMapSlotSizeMarksIndirectElem(t *testing.T) {
 	if !SwissMapLayoutOK {
 		t.Skip("swiss map layout unavailable")
 	}
@@ -31,14 +27,25 @@ func TestProbeSwissMapSlotSizeDeclinesIndirectElem(t *testing.T) {
 	// Exactly at the limit: still inline, still probed.
 	type atLimit struct{ P [MapMaxElemBytes]byte }
 
-	if _, ok := ProbeSwissMapSlotSize(reflect.TypeOf(map[string]overLimit{}),
-		reflect.TypeOf(overLimit{}).Size()); ok {
-		t.Errorf("probe accepted a map whose element Go stores behind a pointer; the stride it reports describes the pointer, not the element")
+	slotSize, indirect, ok := ProbeSwissMapSlotSize(reflect.TypeOf(map[string]overLimit{}),
+		reflect.TypeOf(overLimit{}).Size())
+	if !ok {
+		t.Fatal("probe declined a map whose element Go stores behind a pointer; the slot striding is unchanged and the indirection is reported to the consumer")
 	}
-	slotSize, ok := ProbeSwissMapSlotSize(reflect.TypeOf(map[string]atLimit{}),
+	if !indirect {
+		t.Error("probe reported an indirect element as inline; a consumer would read the *V as the V")
+	}
+	if slotSize == 0 || slotSize%8 != 0 {
+		t.Errorf("probe reported stride %d for an indirect element; it must be a nonzero multiple of 8, the size of the pointer slot", slotSize)
+	}
+
+	slotSize, indirect, ok = ProbeSwissMapSlotSize(reflect.TypeOf(map[string]atLimit{}),
 		reflect.TypeOf(atLimit{}).Size())
 	if !ok {
 		t.Fatal("probe declined an element exactly at the limit; it is still stored inline, so the fast path must remain available")
+	}
+	if indirect {
+		t.Error("probe reported an element exactly at the limit as indirect; Go still stores it inline")
 	}
 	if slotSize == 0 {
 		t.Error("probe reported ok with a zero stride")

@@ -166,8 +166,9 @@ func buildMapInfo(t reflect.Type, info *typ.MapTypeInfo, building map[uintptr]*E
 		MapRType:    gort.TypePtr(t),
 		IsStringKey: info.IsStringKey,
 	}
-	if slotSize, ok := probeSwissMapSlotSize(t, info.ValType.Size); ok {
+	if slotSize, indirect, ok := probeSwissMapSlotSize(t, info.ValType.Size); ok {
 		mi.SlotSize = slotSize
+		mi.Indirect = indirect
 	}
 	return mi
 }

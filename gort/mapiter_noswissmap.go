@@ -67,8 +67,8 @@ func noswissMapiterinit(t unsafe.Pointer, m unsafe.Pointer, it unsafe.Pointer) /
 //go:linkname noswissMapiternext runtime.mapiternext
 func noswissMapiternext(it unsafe.Pointer) //nolint:revive
 
-func ProbeSwissMapSlotSize(_ reflect.Type, _ uintptr) (slotSize uintptr, ok bool) {
-	return 0, false
+func ProbeSwissMapSlotSize(_ reflect.Type, _ uintptr) (slotSize uintptr, indirect bool, ok bool) {
+	return 0, false, false
 }
 
 // SwissMapLayout and ReadMapLayout are build-tag stubs for non-swissmap builds.

@@ -156,4 +156,5 @@ type EncMapInfo struct {
 	MapRType    unsafe.Pointer
 	IsStringKey bool
 	SlotSize    uintptr // Swiss Map slot size; 0 if unknown
+	Indirect    bool    // element stored behind a pointer; slots hold a *V
 }

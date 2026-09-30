@@ -138,9 +138,15 @@ const (
 	fbReasonOmitZero                   // omitzero check whose IsZero closure runs in Go
 )
 
-// opFlagIfaceField mirrors native VJ_OP_FLAG_IFACE_FIELD: the unfold field's
-// word 0 is an itab rather than an rtype.
-const opFlagIfaceField uint8 = 0x01
+// VjOpHdr.flags bits, mirroring native VJ_OP_FLAG_*.
+const (
+	// opFlagIfaceField: the unfold field's word 0 is an itab rather than an
+	// rtype.
+	opFlagIfaceField uint8 = 0x01
+	// opFlagIndirectElem: the MAP_STR_ITER map stores its element behind a
+	// pointer, so each slot holds a *V the VM dereferences once.
+	opFlagIndirectElem uint8 = 0x02
+)
 
 const (
 	vjStStackDepthMask = uint64(0x000000FF)

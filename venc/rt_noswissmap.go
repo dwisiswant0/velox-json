@@ -25,6 +25,6 @@ func mapsIterInit(t unsafe.Pointer, m unsafe.Pointer, it *mapsIter) {
 }
 func mapsIterNext(it *mapsIter) { gort.MapsIterNext(it) }
 
-func probeSwissMapSlotSize(mapType reflect.Type, valSize uintptr) (slotSize uintptr, ok bool) {
+func probeSwissMapSlotSize(mapType reflect.Type, valSize uintptr) (slotSize uintptr, indirect bool, ok bool) {
 	return gort.ProbeSwissMapSlotSize(mapType, valSize)
 }
