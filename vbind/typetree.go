@@ -564,7 +564,7 @@ type SlotTemplate struct {
 //	@32 Len       4  cumulative elem count (EWMA sample)    [Bump]
 //	@36 Cap       4  elem capacity                          [Bump]
 //	@40 Aux       4  MuBlock [Bump] | Group [RecBump, RecBatch] (Go-only)
-//	@44 pad       4
+//	@44 LenHint   4  cross-parse slice length prediction [Bump] (Go-only)
 type SlotClass struct {
 	Block    unsafe.Pointer // off 0  8  bump arena OR *RecBatchMatrix
 	RType    unsafe.Pointer // off 8  8  runtime *_type (Go-only; C never reads)
@@ -577,7 +577,7 @@ type SlotClass struct {
 	Len      uint32         // off 32 4  cumulative elem count [Bump]
 	Cap      uint32         // off 36 4  elem cap [Bump]
 	Aux      uint32         // off 40 4  MuBlock [Bump] | Group [RecBump, RecBatch]
-	_pad1    [4]byte        // off 44 4
+	LenHint  uint32         // off 44 4  slice length prediction [Bump]
 }
 
 // IsBumpTail reports whether this class hands out slice backings by borrowing
@@ -588,7 +588,8 @@ func (sc *SlotClass) IsBumpTail() bool {
 	return sc.Mode == slotBump && sc.Block != nil
 }
 
-// This overlay is valid only when Mode is slotBump. Offset 40 holds MuBlock.
+// This overlay is valid only when Mode is slotBump. Offset 40 holds MuBlock
+// and offset 44 the final length of the last slice that outgrew its backing.
 type BumpSlotClass struct {
 	Block    unsafe.Pointer
 	RType    unsafe.Pointer
@@ -601,7 +602,7 @@ type BumpSlotClass struct {
 	Len      uint32
 	Cap      uint32
 	MuBlock  uint32
-	_pad1    [4]byte
+	LenHint  uint32
 }
 
 // This overlay is valid only when Mode is slotRecBump. Offset 40 holds Group;
@@ -817,9 +818,11 @@ var (
 	_ = [1]struct{}{}[unsafe.Offsetof(SlotClass{}.Len)-32]
 	_ = [1]struct{}{}[unsafe.Offsetof(SlotClass{}.Cap)-36]
 	_ = [1]struct{}{}[unsafe.Offsetof(SlotClass{}.Aux)-40]
+	_ = [1]struct{}{}[unsafe.Offsetof(SlotClass{}.LenHint)-44]
 	_ = [1]struct{}{}[unsafe.Sizeof(BumpSlotClass{})-48]
 	_ = [1]struct{}{}[unsafe.Offsetof(BumpSlotClass{}.Flags)-21]
 	_ = [1]struct{}{}[unsafe.Offsetof(BumpSlotClass{}.MuBlock)-40]
+	_ = [1]struct{}{}[unsafe.Offsetof(BumpSlotClass{}.LenHint)-44]
 	_ = [1]struct{}{}[unsafe.Sizeof(RecBumpSlotClass{})-48]
 	_ = [1]struct{}{}[unsafe.Offsetof(RecBumpSlotClass{}.Flags)-21]
 	_ = [1]struct{}{}[unsafe.Offsetof(RecBumpSlotClass{}.Group)-40]

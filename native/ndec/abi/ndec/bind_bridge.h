@@ -379,7 +379,7 @@ typedef struct BindSlotClass {
   uint32_t len;       /* off 32, BUMP completed element count */
   uint32_t cap;       /* off 36, BUMP element capacity */
   uint32_t aux;       /* off 40, BUMP predictor or recursive group */
-  uint32_t _pad1;     /* off 44, padding to 48 bytes */
+  uint32_t len_hint;  /* off 44, BUMP slice length prediction; Go only */
 } BindSlotClass;
 _Static_assert(sizeof(BindSlotClass) == 48, "BindSlotClass size drift");
 _Static_assert(offsetof(BindSlotClass, block) == 0, "BindSlotClass.block off 0");
@@ -391,6 +391,7 @@ _Static_assert(offsetof(BindSlotClass, limit) == 28, "BindSlotClass.limit off 28
 _Static_assert(offsetof(BindSlotClass, len) == 32, "BindSlotClass.len off 32");
 _Static_assert(offsetof(BindSlotClass, cap) == 36, "BindSlotClass.cap off 36");
 _Static_assert(offsetof(BindSlotClass, aux) == 40, "BindSlotClass.aux off 40");
+_Static_assert(offsetof(BindSlotClass, len_hint) == 44, "BindSlotClass.len_hint off 44");
 
 /*
  * RecBatch provides bounded typed backings for recursive slices at capacities 1

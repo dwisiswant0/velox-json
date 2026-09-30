@@ -118,6 +118,25 @@ type Allocator struct {
 	// TapeArena is a monotonic cross-parse bump view carved by native code.
 	// Published Value document tape slices keep displaced backings reachable.
 	TapeArena []uint64
+
+	// growWatch holds, per slot class, the latest slice of this parse that
+	// outgrew its backing. Release harvests each final length into the
+	// class LenHint. Only a few classes outgrow per parse, so lookup scans.
+	growWatch []growWatch
+}
+
+// growWatch snapshots a slice header for harvest at Release. The data and cap
+// snapshot validate the read: a header relocated by a parent grow still holds
+// the copied final value, while an unrelated overwrite fails the identity check.
+// shared records that a second slice of the class outgrew in the same parse.
+// One slice length cannot predict a population: a short slice outgrowing a
+// block tail would take the length of an unrelated long sibling.
+type growWatch struct {
+	sc     *SlotClass
+	hdr    *gort.SliceHeader
+	data   unsafe.Pointer
+	cap    int
+	shared bool
 }
 
 // A detach set drops its slot backings as one unit. Typed overlay pointers let
@@ -304,6 +323,10 @@ func (a *Allocator) Release() {
 	}
 	a.retained = a.retained[:0]
 
+	if len(a.growWatch) != 0 {
+		a.harvestGrowHints()
+	}
+
 	if len(a.mapSweep) != 0 {
 		a.sweepMapSlots()
 	}
@@ -325,6 +348,34 @@ func (a *Allocator) Release() {
 	}
 
 	a.StageLive()
+}
+
+// harvestGrowHints turns each watched header's final length into the next
+// parse's prediction and drops the watch, so no user memory stays pinned.
+func (a *Allocator) harvestGrowHints() {
+	for i := range a.growWatch {
+		w := &a.growWatch[i]
+		w.sc.LenHint = 0
+		if h := w.hdr; !w.shared && h.Data == w.data && uint(h.Len) <= uint(w.cap) {
+			w.sc.LenHint = uint32(h.Len)
+		}
+		*w = growWatch{}
+	}
+	a.growWatch = a.growWatch[:0]
+}
+
+// watchGrow records hdr as the latest outgrowing slice of sc. A repeated grow
+// of one slice keeps its header address; a different address is a sibling.
+func (a *Allocator) watchGrow(sc *SlotClass, hdr *gort.SliceHeader) {
+	w := growWatch{sc: sc, hdr: hdr, data: hdr.Data, cap: hdr.Cap}
+	for i := range a.growWatch {
+		if old := &a.growWatch[i]; old.sc == sc {
+			w.shared = old.shared || old.hdr != hdr
+			*old = w
+			return
+		}
+	}
+	a.growWatch = append(a.growWatch, w)
 }
 
 // sweepMapSlots nils consumed map header slots. The map class is consumed
@@ -495,12 +546,23 @@ func (a *Allocator) ServeNewBlock(ci, need uint32) error {
 
 // ServeSliceGrow handles growth for a non-recursive bump slice. Requests above
 // slotBatchMax bypass the shared block and EWMA. Smaller requests take a whole
-// EWMA-sized block; close returns the unused tail to sibling slices.
+// EWMA-sized block; close returns the unused tail to sibling slices. A final
+// length observed on an earlier parse sizes the first grow past it directly,
+// skipping the doubling chain a stable document shape would repeat.
 func (a *Allocator) ServeSliceGrow(sc *SlotClass, hdr *gort.SliceHeader) error {
 	a.statsSliceGrow(sc)
 
 	floor := a.slotBatchMax >> 2
 	needCap := uint32(max(hdr.Len*2, int(floor)))
+	// A zero length grow is block exhaustion at array open, shared by every
+	// slice of the class; only a slice outgrowing its backing trains or
+	// consumes the prediction.
+	if hdr.Len > 0 {
+		if sc.LenHint > uint32(hdr.Len) {
+			needCap = sc.LenHint
+		}
+		defer a.watchGrow(sc, hdr)
+	}
 
 	if needCap > a.slotBatchMax {
 		data := gort.UnsafeNewArray(sc.RType, int(needCap))

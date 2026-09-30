@@ -762,3 +762,61 @@ func TestReleaseScopedKeepsLiveBackingsStaged(t *testing.T) {
 		t.Error("after Release: the string arena native still interns into is not staged")
 	}
 }
+
+// A slice that outgrew its backing on one parse sizes its next outgrowing
+// grow to the harvested final length instead of doubling toward it.
+func TestServeSliceGrowCrossParseHint(t *testing.T) {
+	a := NewAllocator(makeTreeForGrow(t))
+	sc := &a.Slots[0]
+
+	// Double past the block ceiling, then close at a length above it, as
+	// native close does by setting Len and Cap to the element count.
+	const final = SlotBatchMax + SlotBatchMax/2
+	hdr := gort.SliceHeader{}
+	for hdr.Cap < final {
+		if err := a.ServeSliceGrow(sc, &hdr); err != nil {
+			t.Fatalf("grow err: %v", err)
+		}
+		hdr.Len = min(hdr.Cap, final)
+	}
+	hdr.Cap = final
+	a.Release()
+	if got := sc.LenHint; got != final {
+		t.Fatalf("LenHint = %d, want %d", got, final)
+	}
+	if len(a.growWatch) != 0 {
+		t.Fatal("Release must drop the watched header")
+	}
+
+	backing := make([]elemKind, 8)
+	hdr = gort.SliceHeader{Data: unsafe.Pointer(&backing[0]), Len: 8, Cap: 8}
+	if err := a.ServeSliceGrow(sc, &hdr); err != nil {
+		t.Fatalf("grow err: %v", err)
+	}
+	if hdr.Cap != final {
+		t.Errorf("Cap = %d, want %d (hinted, not doubled)", hdr.Cap, final)
+	}
+}
+
+// Two distinct slices of one class outgrowing in a parse leave no hint: the
+// last one's length says nothing about the population sharing the block.
+func TestServeSliceGrowSiblingsClearHint(t *testing.T) {
+	a := NewAllocator(makeTreeForGrow(t))
+	sc := &a.Slots[0]
+	sc.LenHint = SlotBatchMax * 2
+
+	var h1, h2 gort.SliceHeader
+	for _, h := range []*gort.SliceHeader{&h1, &h2} {
+		if err := a.ServeSliceGrow(sc, h); err != nil {
+			t.Fatalf("open err: %v", err)
+		}
+		h.Len = h.Cap
+		if err := a.ServeSliceGrow(sc, h); err != nil {
+			t.Fatalf("grow err: %v", err)
+		}
+	}
+	a.Release()
+	if sc.LenHint != 0 {
+		t.Errorf("LenHint = %d, want 0 (siblings share the class)", sc.LenHint)
+	}
+}
