@@ -11,8 +11,7 @@ go test . -count=1
 go test -race . -count=1
 
 # ./decode/bind carries the interleave sweeps, which run close to the 10m
-# default on the slower CI runners (macOS AMD64 through Rosetta), so its legs
-# name their own timeout.
+# default on the slower CI runners, so its legs name their own timeout.
 go test ./vbind ./decode/bind/ ./native/ndec ./native/vlib -count=1 -timeout 30m
 go test -race ./vbind ./decode/bind/ ./native/ndec ./native/vlib -count=1 -timeout 30m
 
