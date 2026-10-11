@@ -17,7 +17,8 @@
 #include "ndec/core/number.h"
 #include "ndec/core/tape.h"
 #include "ndec/cursor.h"
-#include "ndec/string.h"
+#include "ndec/machine.h"
+#include "ndec/valid.h"
 
 /* Stage 1 validates only the opening byte. The full atom must match and be
  * followed by a JSON delimiter so prefixes such as `truee` are rejected.

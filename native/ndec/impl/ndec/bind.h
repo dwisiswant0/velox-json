@@ -657,8 +657,7 @@ object_field_key: {
 #endif
   const uint8_t *key = SRC_ADVANCE_PTR();
   if (UNLIKELY(*key != '"')) BIND_YIELD_ERR(m, BIND_ERR_SYNTAX, (uint32_t)(key - src));
-  const BindType *t            = &cur_type;
-  const BindField *first_field = (const BindField *)t->child;
+  const BindField *first_field = (const BindField *)cur_type.child;
   int fidx;
   {
     /* Fieldless structs use an empty lookup. Escaped keys are decoded into

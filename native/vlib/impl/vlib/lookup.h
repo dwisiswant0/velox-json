@@ -430,18 +430,18 @@ INLINE int ndec_lookup_match_quoted(const ndec_lookup *l, size_t idx, const char
   if (LIKELY(l->kind == NDEC_LOOKUP_TIER_WINDOW)) {
     const ndec_lookup_window *w = (const ndec_lookup_window *)l;
     cmp = w->cmp, n = w->n, stride = w->stride;
-    klens   = (const uint8_t *)w + sizeof(ndec_lookup_window);
-    kbytes  = (const char *)w + w->key_bytes_off;
+    klens  = (const uint8_t *)w + sizeof(ndec_lookup_window);
+    kbytes = (const char *)w + w->key_bytes_off;
   } else if (l->kind == NDEC_LOOKUP_TIER_GPERF) {
     const ndec_lookup_gperf *gp = (const ndec_lookup_gperf *)l;
     cmp = gp->cmp, n = gp->n, stride = gp->stride;
-    klens   = (const uint8_t *)gp + gp->key_len_off;
-    kbytes  = (const char *)gp + gp->key_bytes_off;
+    klens  = (const uint8_t *)gp + gp->key_len_off;
+    kbytes = (const char *)gp + gp->key_bytes_off;
   } else if (l->kind == NDEC_LOOKUP_TIER_HAND) {
     const ndec_lookup_hand *hd = (const ndec_lookup_hand *)l;
     cmp = hd->cmp, n = hd->n, stride = hd->stride;
-    klens   = (const uint8_t *)hd + sizeof(ndec_lookup_hand);
-    kbytes  = (const char *)hd + hd->key_bytes_off;
+    klens  = (const uint8_t *)hd + sizeof(ndec_lookup_hand);
+    kbytes = (const char *)hd + hd->key_bytes_off;
   } else {
     return 0;
   }
