@@ -470,6 +470,13 @@ enum {
    * are unused.
    */
   BIND_YIELD_INPUT = 12,
+  /*
+   * A map open merging into a live user map asks Go to root it: Go stores the
+   * *hmap at Target into the next cell of SlotClass Arg0 through a barriered
+   * store. Region staging is noscan and native may drop the user's edge to the
+   * map before the drain, so the cell is its GC root until Release sweeps it.
+   */
+  BIND_YIELD_MAP_PIN = 13,
 };
 
 enum {

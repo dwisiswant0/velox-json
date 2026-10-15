@@ -418,8 +418,9 @@ func (a *Allocator) watchGrow(sc *SlotClass, hdr *gort.SliceHeader) {
 }
 
 // sweepMapSlots nils consumed map header slots. The map class is consumed
-// only by native map open, which reads the prewired *hmap and copies it to the
-// destination, leaving this slot as the sole scannable root until the drain.
+// only by map open: native reads the prewired *hmap and copies it to the
+// destination, or PinMap stores a live user map a merge stages into. Either
+// way the slot is the sole scannable root that survives until the drain.
 // Once drains finish, the copy is redundant: the user graph roots every live
 // map, so the copy only pins dropped documents. *map pointee cells live in a
 // distinct class (see builder.registerSlotClass) and are never swept. Typed
@@ -582,6 +583,21 @@ func (a *Allocator) ServeNewBlock(ci, need uint32) error {
 	a.statsNewBlock(ci)
 	a.installBlock(&a.Slots[ci], a.slotBatchMax)
 	return nil
+}
+
+// PinMap roots a live user map that native merges into. Its staged entries sit
+// in the noscan map buffer until the drain, and native may drop the user's edge
+// to the map first, so the map takes the next cell of its class through a
+// barriered store: the barrier marks it for a cycle in progress, and the cell
+// roots it until sweepMapSlots clears the consumed cells at Release. The
+// prewired hmap the cell held goes unused.
+func (a *Allocator) PinMap(ci uint32, hmap unsafe.Pointer) {
+	sc := &a.Slots[ci]
+	if sc.Offset >= sc.Limit {
+		a.installBlock(sc, a.slotBatchMax)
+	}
+	*(*unsafe.Pointer)(unsafe.Add(sc.Block, uintptr(sc.Offset))) = hmap
+	sc.Offset += sc.ElemSize
 }
 
 // ServeSliceGrow handles growth for a non-recursive bump slice. Requests above

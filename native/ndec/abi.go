@@ -401,6 +401,12 @@ const (
 	// relocates the scanner-reported tail, reads more bytes, runs the window
 	// scanner, and reinstalls Ctx.Src plus the cursor pair before re-entry.
 	BindYieldInput uint32 = 12
+	// BindYieldMapPin asks Go to root the live user map a merging open stages
+	// into: Go stores the *hmap at Target into the next cell of SlotClass Arg0
+	// through a barriered store. Region staging is noscan and native may drop
+	// the user's edge to the map before the drain, so the cell is its GC root
+	// until Release sweeps the class.
+	BindYieldMapPin uint32 = 13
 )
 
 // Resume phases must match BIND_PHASE_* in bind_bridge.h. Go selects the Root

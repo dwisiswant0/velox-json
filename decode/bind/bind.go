@@ -985,6 +985,9 @@ func (p *Parser) serveYield(m *ndec.BindMachine) (done bool, err error) {
 		return false, mkBindErr(p, machineErrInfo(m), p.curSrc(), 0, true)
 	case ndec.BindYieldBlockFull:
 		return false, p.alloc.ServeNewBlock(m.Yield.Arg0, m.Yield.Arg1)
+	case ndec.BindYieldMapPin:
+		p.alloc.PinMap(m.Yield.Arg0, *(*unsafe.Pointer)(m.Yield.Target))
+		return false, nil
 	case ndec.BindYieldTapeArena:
 		// Grow to the scanned bound and resume at BIND_PHASE_ROOT_SCANNED. Tape
 		// writes begin after this yield, and syncTapeArena enforces the seam limit.

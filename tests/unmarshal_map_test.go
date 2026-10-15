@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unsafe"
 	"weak"
 
 	vjson "github.com/velox-io/json"
@@ -364,5 +365,268 @@ func TestUnmarshal_MapKeyUnconvertible(t *testing.T) {
 				t.Errorf("%v/%s: decoded %v (%v), want an empty map", c.typ, entry, m, err)
 			}
 		})
+	}
+}
+
+// TestUnmarshal_MapMergeIntoExisting pins the merge semantics of every
+// statically-typed map destination: a map already live at the slot keeps its
+// absent keys while present keys overwrite, exactly as encoding/json does.
+// Destinations the binder stages in scratch (any efaces, map values inside a
+// map) replace, matching encoding/json's fresh decode for those shapes. Every
+// case runs through Unmarshal, the chunked Decoder, and UnmarshalValue.
+func TestUnmarshal_MapMergeIntoExisting(t *testing.T) {
+	type mmInner struct {
+		M map[string]int `json:"m"`
+	}
+	type mmHost struct {
+		Inner mmInner `json:"inner"`
+	}
+	type mmPtrInner struct {
+		M map[string]int `json:"m"`
+	}
+	type mmPtrHost struct {
+		Inner *mmPtrInner `json:"inner"`
+	}
+	type mmNested struct {
+		M map[string]map[string]int `json:"m"`
+	}
+	type mmAnyValue struct {
+		M map[string]any `json:"m"`
+	}
+	type mmAnyField struct {
+		V any `json:"v"`
+	}
+
+	// uv selects the UnmarshalValue entry. The tape engine binds every slice
+	// into a fresh backing by design, so slice-shaped roots cannot merge there
+	// and run through the contiguous and streaming entries only; struct fields,
+	// fixed arrays, and map roots merge through all three.
+	cases := []struct {
+		name string
+		in   string
+		uv   bool
+		mk   func() any
+	}{
+		{"root map", `{"new":2,"keep":3}`, true, func() any {
+			m := map[string]int{"keep": 1}
+			return &m
+		}},
+		{"struct field", `{"inner":{"m":{"y":2}}}`, true, func() any {
+			return &mmHost{Inner: mmInner{M: map[string]int{"x": 1}}}
+		}},
+		{"pointer-resolved field", `{"inner":{"m":{"y":2}}}`, true, func() any {
+			return &mmPtrHost{Inner: &mmPtrInner{M: map[string]int{"x": 1}}}
+		}},
+		{"slice of maps", `[{"y":2}]`, false, func() any {
+			s := []map[string]int{{"x": 1}}
+			return &s
+		}},
+		{"slice of map pointers", `[{"y":2}]`, false, func() any {
+			m := map[string]int{"x": 1}
+			s := []*map[string]int{&m}
+			return &s
+		}},
+		{"nested map value replaces", `{"m":{"a":{"y":2},"fresh":{"n":1}}}`, true, func() any {
+			return &mmNested{M: map[string]map[string]int{"a": {"x": 1}, "keep": {"k": 9}}}
+		}},
+		{"any map value replaces", `{"m":{"a":{"y":2}}}`, true, func() any {
+			return &mmAnyValue{M: map[string]any{"a": map[string]any{"x": 1}}}
+		}},
+		{"any field replaces", `{"v":{"y":2}}`, true, func() any {
+			return &mmAnyField{V: map[string]any{"x": 1}}
+		}},
+		{"duplicate keys last wins", `{"k":1,"k":2}`, true, func() any {
+			m := map[string]int{"old": 0}
+			return &m
+		}},
+		{"empty object keeps all", `{}`, true, func() any {
+			m := map[string]int{"x": 1}
+			return &m
+		}},
+		{"array of maps", `[{"y":2}]`, true, func() any {
+			a := [1]map[string]int{{"x": 1}}
+			return &a
+		}},
+	}
+
+	for _, tc := range cases {
+		stdV := tc.mk()
+		if err := json.Unmarshal([]byte(tc.in), stdV); err != nil {
+			t.Fatalf("%s: encoding/json rejected the case: %v", tc.name, err)
+		}
+		decodeEntries(tc.in, tc.mk, tc.uv, func(entry string, v any, err error) {
+			if err != nil {
+				t.Errorf("%s/%s: %v", tc.name, entry, err)
+				return
+			}
+			if !reflect.DeepEqual(v, stdV) {
+				t.Errorf("%s/%s: got %#v, want encoding/json's %#v", tc.name, entry, v, stdV)
+			}
+		})
+	}
+}
+
+// TestUnmarshal_MapMergeAcrossParses pins the sequential-reuse shape of the
+// merge semantics: one destination decoded by several documents accumulates
+// keys, a null map resets the slot to nil so the next document starts fresh,
+// and a struct field's map follows the same rules across parses.
+func TestUnmarshal_MapMergeAcrossParses(t *testing.T) {
+	m := map[string]int{"x": 1}
+	if err := vjson.Unmarshal([]byte(`{"y":2}`), &m); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if err := vjson.Unmarshal([]byte(`{"z":3,"x":4}`), &m); err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if !reflect.DeepEqual(m, map[string]int{"x": 4, "y": 2, "z": 3}) {
+		t.Errorf("accumulated map = %v, want x:4 y:2 z:3", m)
+	}
+	if err := vjson.Unmarshal([]byte(`null`), &m); err != nil {
+		t.Fatalf("null: %v", err)
+	}
+	if m != nil {
+		t.Errorf("null map = %v, want nil", m)
+	}
+	if err := vjson.Unmarshal([]byte(`{"fresh":1}`), &m); err != nil {
+		t.Fatalf("after null: %v", err)
+	}
+	if !reflect.DeepEqual(m, map[string]int{"fresh": 1}) {
+		t.Errorf("map after null = %v, want fresh:1 only", m)
+	}
+
+	type mmReuseHost struct {
+		M map[string]int `json:"m"`
+		N string         `json:"n"`
+	}
+	h := mmReuseHost{M: map[string]int{"keep": 1}}
+	for _, doc := range []string{`{"m":{"a":1},"n":"x"}`, `{"m":{"b":2},"n":"y"}`} {
+		if err := vjson.Unmarshal([]byte(doc), &h); err != nil {
+			t.Fatalf("%s: %v", doc, err)
+		}
+	}
+	if !reflect.DeepEqual(h.M, map[string]int{"keep": 1, "a": 1, "b": 2}) {
+		t.Errorf("field map across parses = %v, want keep:1 a:1 b:2", h.M)
+	}
+	if h.N != "y" {
+		t.Errorf("N = %q, want y", h.N)
+	}
+}
+
+// gcEachReader runs a GC and then check before serving each chunk, so a
+// chunked Decoder collects garbage between every pair of native windows.
+type gcEachReader struct {
+	chunkReader
+	check func()
+}
+
+func (r *gcEachReader) Read(p []byte) (int, error) {
+	runtime.GC()
+	r.check()
+	return r.chunkReader.Read(p)
+}
+
+// TestUnmarshal_MapMergeRootedUntilDrain pins that a user map the binder
+// merges into stays alive while its staged entries wait for the drain, even
+// after a later value drops the destination's edge to it: the map slot itself
+// (a duplicate key's null), a pointer above it, or the slice backing holding
+// it. The trailing padding forces windows, and so collections, between the
+// drop and the document end, where the drain writes into the map.
+func TestUnmarshal_MapMergeRootedUntilDrain(t *testing.T) {
+	type field struct {
+		M map[string]int `json:"m"`
+		P string         `json:"p"`
+	}
+	type inner struct {
+		M map[string]int `json:"m"`
+	}
+	type ptrHost struct {
+		Inner *inner `json:"inner"`
+		P     string `json:"p"`
+	}
+	type sliceHost struct {
+		L []map[string]int `json:"l"`
+		P string           `json:"p"`
+	}
+	pad := `,"p":"` + strings.Repeat("x", 4096) + `"}`
+
+	cases := []struct {
+		name string
+		in   string
+		mk   func() (any, map[string]int)
+	}{
+		{"map slot nulled", `{"m":{"a":1},"m":null` + pad, func() (any, map[string]int) {
+			h := &field{M: map[string]int{"keep": 1}}
+			return h, h.M
+		}},
+		{"parent pointer nulled", `{"inner":{"m":{"a":1}},"inner":null` + pad, func() (any, map[string]int) {
+			h := &ptrHost{Inner: &inner{M: map[string]int{"keep": 1}}}
+			return h, h.Inner.M
+		}},
+		{"slice backing dropped", `{"l":[{"a":1}],"l":null` + pad, func() (any, map[string]int) {
+			h := &sliceHost{L: []map[string]int{{"keep": 1}}}
+			return h, h.L[0]
+		}},
+	}
+	for _, tc := range cases {
+		dst, live := tc.mk()
+		// Weakly track the runtime map object the destination starts with.
+		w := weak.Make(*(**byte)(unsafe.Pointer(&live)))
+		live = nil
+		collected := false
+		r := &gcEachReader{chunkReader: chunkReader{data: []byte(tc.in), size: 64}, check: func() {
+			collected = collected || w.Value() == nil
+		}}
+		if err := vjson.NewDecoder(r).Decode(dst); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		runtime.KeepAlive(dst)
+		if collected {
+			t.Errorf("%s: merged map collected while its entries were staged", tc.name)
+		}
+	}
+}
+
+// TestUnmarshal_MapValueArrayFreshAcrossParses pins that a fixed array map
+// value binds from zero on the tape engine. Map entries stage in a pooled
+// buffer that outlives the parse, so an array element left unzeroed would
+// expose the previous parse's bytes: a stale scalar, or a stale map pointer the
+// element map would merge into, aliasing the earlier result.
+func TestUnmarshal_MapValueArrayFreshAcrossParses(t *testing.T) {
+	type ab struct{ A, B int }
+	type withMap struct {
+		M map[string]int `json:"m"`
+	}
+	uv := func(in string, v any) {
+		t.Helper()
+		pv, err := vjson.Parse([]byte(in))
+		if err == nil {
+			err = vjson.UnmarshalValue(pv, v)
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", in, err)
+		}
+	}
+
+	var s1, s2 map[string][1]ab
+	uv(`{"a":[{"A":1,"B":2}]}`, &s1)
+	uv(`{"b":[{"A":5}]}`, &s2)
+	if want := (map[string][1]ab{"b": {{A: 5}}}); !reflect.DeepEqual(s2, want) {
+		t.Errorf("scalar element = %v, want %v", s2, want)
+	}
+
+	var m1, m2 map[string][1]map[string]int
+	uv(`{"a":[{"x":1}]}`, &m1)
+	uv(`{"b":[{"y":2}]}`, &m2)
+	if !reflect.DeepEqual(m1, map[string][1]map[string]int{"a": {{"x": 1}}}) ||
+		!reflect.DeepEqual(m2, map[string][1]map[string]int{"b": {{"y": 2}}}) {
+		t.Errorf("map element aliased across parses: first %v, second %v", m1, m2)
+	}
+
+	var f1, f2 map[string][1]withMap
+	uv(`{"a":[{"m":{"x":1}}]}`, &f1)
+	uv(`{"b":[{"m":{"y":2}}]}`, &f2)
+	if !reflect.DeepEqual(f1, map[string][1]withMap{"a": {{M: map[string]int{"x": 1}}}}) ||
+		!reflect.DeepEqual(f2, map[string][1]withMap{"b": {{M: map[string]int{"y": 2}}}}) {
+		t.Errorf("struct element map aliased across parses: first %v, second %v", f1, f2)
 	}
 }

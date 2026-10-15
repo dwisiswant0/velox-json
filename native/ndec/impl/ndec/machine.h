@@ -352,6 +352,23 @@ NOINLINE static void bind_key_memo_record(NdecBindMachine *m, uint16_t type_idx,
   if (w != NULL) *w = (uint8_t)(fidx + 1);
 }
 
+/* Map open invariant: a non-nil slot word is a live *hmap of the slot's map
+ * type. User destinations hold the user's map or nil, and staging sites (KV
+ * entries, typed intermediates, any data words) clear the word before the open.
+ * A live map is kept, so JSON keys overwrite and absent keys survive, as
+ * encoding/json merges; nil takes the next prewired hmap.
+ *
+ * A merge stages into a map the allocator does not own, and region staging is
+ * noscan. Native may drop the user's edge to the map before the drain (a later
+ * null, a cleared parent pointer), so the open first has Go store the map into
+ * a map class cell through a barriered store (BIND_YIELD_MAP_PIN). That cell
+ * roots the map until Release sweeps the class. bind_map_rooted reports that
+ * the last consumed cell already names the map: the retry after the pin, and a
+ * reopened map, skip the yield. */
+INLINE int bind_map_rooted(const BindSlotClass *sc, const void *live) {
+  return sc->offset >= sc->elem_size && *(void *const *)(sc->block + sc->offset - sc->elem_size) == live;
+}
+
 /* No deferred raw value is being materialized across windows. */
 #define BIND_RAW_NONE 0xFFFFFFFFu
 

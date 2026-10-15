@@ -1396,6 +1396,13 @@ array_value_bind_body: {
     if (ch == 'n') {
       if (bind_validate_atom(SRC_PTR(), 'n') < 0) BIND_YIELD_ERR(m, BIND_ERR_SYNTAX, SRC_POS());
       SRC_ADVANCE();
+      /* Null clears the element slot's reference-like shapes, as the object
+       * field and map value paths do. The chain resolver skipped null, so
+       * body still names the element slot and child_type its declared type.
+       * Reused backings would otherwise keep the previous element's pointer;
+       * scalars keep their value, matching encoding/json's "null has no
+       * effect" for value kinds. */
+      BIND_NULL_ZERO(body, m, child_type);
       goto array_continue;
     }
   } else {
@@ -1505,17 +1512,22 @@ map_open: {
   int32_t alloc_class = cur_type.u.map.alloc_class;
   BindSlotClass *sc   = &m->b.alloc.slot_classes[alloc_class];
 
-  /* Capacity yields occur before state changes, so map_open is retry-safe. */
+  /* Yields occur before state changes, so map_open is retry-safe. The pin
+   * yield's only effect is the cell bind_map_rooted recognizes on retry. */
   if (UNLIKELY(m->b.alloc.map_buf_used + region_size > m->b.alloc.map_buf_cap)) {
     BIND_YIELD_FLUSH_MAP(m, 0, 0, (uint8_t *)0, BIND_PHASE_MAP_OPEN_RETRY);
   }
-  if (sc->offset >= sc->limit) {
-    BIND_YIELD(m, BIND_YIELD_BLOCK_FULL, (uint32_t)alloc_class, 0, BIND_PHASE_MAP_OPEN_RETRY);
+  uint8_t *map_hdr = *(uint8_t **)parent_slot;
+  if (LIKELY(map_hdr == NULL)) {
+    if (sc->offset >= sc->limit) {
+      BIND_YIELD(m, BIND_YIELD_BLOCK_FULL, (uint32_t)alloc_class, 0, BIND_PHASE_MAP_OPEN_RETRY);
+    }
+    map_hdr = *(uint8_t **)(sc->block + sc->offset);
+    sc->offset += sc->elem_size;
+    *(void **)parent_slot = map_hdr;
+  } else if (!bind_map_rooted(sc, map_hdr)) {
+    BIND_YIELD(m, BIND_YIELD_MAP_PIN, (uint32_t)alloc_class, 0, BIND_PHASE_MAP_OPEN_RETRY);
   }
-  /* Always overwrite parent_slot because a reused map-buffer slot may hold a
-   * stale pointer from an earlier flush. */
-  uint8_t *map_hdr = *(uint8_t **)(sc->block + sc->offset);
-  sc->offset += sc->elem_size;
 
   uint32_t region_off = m->b.alloc.map_buf_used;
   m->b.alloc.map_buf_used += region_size;
@@ -1527,7 +1539,6 @@ map_open: {
   map_region->entry_count    = 0;
   map_region->next_entry_off = 0;
   map_region->stride         = stride;
-  *(void **)parent_slot      = map_hdr;
 
   /* Publish the map frame before child descent so drain can identify its live region. */
   {
@@ -2170,9 +2181,12 @@ any_value: {
     goto array_begin;
   }
   /* map_open writes the typed *hmap directly into the interface data word, so
-   * this path must not allocate a separate data slot. */
+   * this path must not allocate a separate data slot. encoding/json decodes an
+   * object into a fresh map for an empty interface, so the old data word is
+   * cleared rather than merged. */
   if (ch == '{') {
     *(const void **)any_slot = am->map_type;
+    *(void **)(any_slot + 8) = NULL;
     BIND_MAP_OPEN(m, &types[am->map_any_type_idx], any_slot + 8, bind_push);
   }
   BIND_ERR_VALUE_OR_EOF(m, SRC_POS());
@@ -3402,12 +3416,18 @@ t_map_open: {
   }
   int32_t ci        = cur_type.u.map.alloc_class;
   BindSlotClass *sc = &m->b.alloc.slot_classes[ci];
-  if (sc->offset >= sc->limit) {
-    TAPE_BIND_YIELD(m, BIND_YIELD_BLOCK_FULL, ci, 0, BIND_PHASE_TAPE_BIND_MAP_OPEN_RETRY);
+  /* The same open as map_open: keep a rooted live map, else a prewired one. */
+  void *map_hdr = *(void **)cur_dst;
+  if (LIKELY(map_hdr == NULL)) {
+    if (sc->offset >= sc->limit) {
+      TAPE_BIND_YIELD(m, BIND_YIELD_BLOCK_FULL, ci, 0, BIND_PHASE_TAPE_BIND_MAP_OPEN_RETRY);
+    }
+    map_hdr = *(void **)(sc->block + sc->offset);
+    sc->offset += sc->elem_size;
+    *(void **)cur_dst = map_hdr;
+  } else if (!bind_map_rooted(sc, map_hdr)) {
+    TAPE_BIND_YIELD(m, BIND_YIELD_MAP_PIN, ci, 0, BIND_PHASE_TAPE_BIND_MAP_OPEN_RETRY);
   }
-  void *map_hdr = *(void **)(sc->block + sc->offset);
-  sc->offset += sc->elem_size;
-  *(void **)cur_dst = map_hdr;
 
   BindMapRegionHeader *region = (BindMapRegionHeader *)(m->b.alloc.map_buf + m->b.alloc.map_buf_used);
   m->b.alloc.map_buf_used += region_size;
@@ -3590,6 +3610,8 @@ t_map_value: {
     /* Preserve the parent map frame before the nested map replaces cur_dst,
      * cur_type, and cur_aux. */
     if (tag != (TAPE_START_OBJECT >> 56)) TAPE_BIND_ELEM_TYPE_MISMATCH(m, child_type);
+    /* The KV entry is staging: its stale word names no map of this entry. */
+    *(void **)body = NULL;
     if (bind_push_map(frames, &depth, cur_dst, cur_type, cur_count, cur_aux))
       TAPE_BIND_YIELD_ERR_NO_POS(m, BIND_ERR_DEPTH, 0);
     cur_dst  = body;
@@ -3602,6 +3624,10 @@ t_map_value: {
     /* Preserve the parent map frame while the nested array or slice owns the
      * current destination and type. */
     if (tag != (TAPE_START_ARRAY >> 56)) TAPE_BIND_ELEM_TYPE_MISMATCH(m, child_type);
+    /* KV slots are pooled and never zeroed between parses, and array elements
+     * bind in place, so the value starts zeroed as on the JSON path. The type
+     * size also fits a redirected intermediate. */
+    __builtin_memset(body, 0, m->b.ctx.type_meta[child_type->type_idx].size);
     if (bind_push_map(frames, &depth, cur_dst, cur_type, cur_count, cur_aux))
       TAPE_BIND_YIELD_ERR_NO_POS(m, BIND_ERR_DEPTH, 0);
     cur_dst   = body;
@@ -3953,6 +3979,7 @@ t_any_value: {
    * and routes via t_scope_end. */
   if (tag == (TAPE_START_OBJECT >> 56)) {
     *(const void **)any_slot = am->map_type;
+    *(void **)(any_slot + 8) = NULL; /* a fresh map, as on the JSON path */
     TAP_ADVANCE();
     TAPE_BIND_MAP_OPEN(m, &types[am->map_any_type_idx], any_slot + 8, bind_push);
   }

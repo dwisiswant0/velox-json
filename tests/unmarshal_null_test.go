@@ -3,6 +3,7 @@ package tests
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -307,4 +308,126 @@ func TestNull_NoError(t *testing.T) {
 		}
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+// The array-element null cases below cover a slot a null element must clear
+// when the backing is reused: a prefilled slice, a fixed array, or a slice
+// reused across parses. A null element clears the slot's reference-like
+// shapes (pointer, map, slice, any) while value kinds keep their previous
+// content, so every case asserts parity with encoding/json rather than a
+// fixed literal.
+
+// nullElem and nullHost back the array-element null cases.
+type nullElem struct {
+	N int
+}
+
+type nullHost struct {
+	Items []*nullElem
+}
+
+// nullDiff unmarshals input into identically prefilled vj and std targets and
+// fails on any divergence, TestNull_StdlibCompat's pairing for slice-shaped
+// destinations.
+func nullDiff[T any](t *testing.T, input string, vj, std *T) {
+	t.Helper()
+	vjErr := vjson.Unmarshal([]byte(input), vj)
+	stdErr := json.Unmarshal([]byte(input), std)
+	if (vjErr == nil) != (stdErr == nil) {
+		t.Fatalf("input %s: error mismatch vjson=%v std=%v", input, vjErr, stdErr)
+	}
+	if !reflect.DeepEqual(vj, std) {
+		t.Errorf("input %s:\n  vjson: %+v (err=%v)\n  std:   %+v (err=%v)", input, *vj, vjErr, *std, stdErr)
+	}
+}
+
+// TestNull_ArrayElementPtrCleared verifies that a null element nils a
+// prefilled pointer element slot, that a non-null neighbor still binds, that
+// a fixed array clears its untouched tail, and that a slice reused across
+// parses keeps no pointer from an earlier one.
+func TestNull_ArrayElementPtrCleared(t *testing.T) {
+	for _, input := range []string{
+		`[null,null]`,
+		`[{"N":9},null]`,
+		`[null,{"N":8}]`,
+		`[null]`,
+	} {
+		vj := []*nullElem{{N: 1}, {N: 2}}
+		std := []*nullElem{{N: 1}, {N: 2}}
+		nullDiff(t, input, &vj, &std)
+
+		vjA := [2]*nullElem{{N: 1}, {N: 2}}
+		stdA := [2]*nullElem{{N: 1}, {N: 2}}
+		nullDiff(t, input, &vjA, &stdA)
+	}
+
+	vj := make([]*nullElem, 2, 8)
+	vj[0], vj[1] = &nullElem{N: 1}, &nullElem{N: 2}
+	std := make([]*nullElem, 2, 8)
+	std[0], std[1] = &nullElem{N: 1}, &nullElem{N: 2}
+	for _, input := range []string{`[{"N":5},{"N":6}]`, `[null,null]`, `[{"N":7},null]`} {
+		if err := vjson.Unmarshal([]byte(input), &vj); err != nil {
+			t.Fatalf("input %s: %v", input, err)
+		}
+		if err := json.Unmarshal([]byte(input), &std); err != nil {
+			t.Fatalf("input %s: %v", input, err)
+		}
+		if !reflect.DeepEqual(vj, std) {
+			t.Fatalf("after %s:\n  vjson: %v\n  std:   %v", input, vj, std)
+		}
+	}
+}
+
+// TestNull_ArrayElementRefShapeCleared verifies the same slot clearing for
+// map, slice, any, and double-pointer elements: null nils the element slot
+// itself rather than leaving the previous element's reference live.
+func TestNull_ArrayElementRefShapeCleared(t *testing.T) {
+	vjM := []map[string]int{{"k": 1}}
+	stdM := []map[string]int{{"k": 1}}
+	nullDiff(t, `[null]`, &vjM, &stdM)
+
+	vjS := [][]int{{1, 2}}
+	stdS := [][]int{{1, 2}}
+	nullDiff(t, `[null]`, &vjS, &stdS)
+
+	vjA := []any{&nullElem{N: 1}, "x"}
+	stdA := []any{&nullElem{N: 1}, "x"}
+	nullDiff(t, `[null,null]`, &vjA, &stdA)
+
+	// Separate pointees per decoder, so the non-null neighbor binds
+	// independently on each side.
+	vjOne, vjTwo := &nullElem{N: 1}, &nullElem{N: 2}
+	vjD := []**nullElem{&vjOne, &vjTwo}
+	stdOne, stdTwo := &nullElem{N: 1}, &nullElem{N: 2}
+	stdD := []**nullElem{&stdOne, &stdTwo}
+	nullDiff(t, `[null,{"N":8}]`, &vjD, &stdD)
+}
+
+// TestNull_ArrayElementValueKindKept verifies value-kind elements keep their
+// previous content on null, encoding/json's "null has no effect", so the
+// assertion is parity rather than clearing.
+func TestNull_ArrayElementValueKindKept(t *testing.T) {
+	vjI := []int{1, 2}
+	stdI := []int{1, 2}
+	nullDiff(t, `[9,null]`, &vjI, &stdI)
+
+	vjS := []nullElem{{N: 1}, {N: 2}}
+	stdS := []nullElem{{N: 1}, {N: 2}}
+	nullDiff(t, `[{"N":9},null]`, &vjS, &stdS)
+}
+
+// TestNull_ArrayElementNestedDestination verifies the element-slot clearing
+// through a struct field descent and through an element struct that itself
+// carries a pointer slice.
+func TestNull_ArrayElementNestedDestination(t *testing.T) {
+	vj := nullHost{Items: []*nullElem{{N: 1}, {N: 2}}}
+	std := nullHost{Items: []*nullElem{{N: 1}, {N: 2}}}
+	nullDiff(t, `{"Items":[null,null]}`, &vj, &std)
+	if !reflect.DeepEqual(vj.Items, []*nullElem{nil, nil}) {
+		t.Errorf("Items = %v, want [nil nil]", vj.Items)
+	}
+
+	vjE := []nullHost{{Items: []*nullElem{{N: 1}}}}
+	stdE := []nullHost{{Items: []*nullElem{{N: 1}}}}
+	nullDiff(t, `[{"Items":[null]}]`, &vjE, &stdE)
 }

@@ -144,11 +144,10 @@ func (c *binder) isByteSlice(ti uint32) bool {
 type siteKind uint8
 
 const (
-	// siteField records a mismatch and skips the value, zeroes reference
-	// kinds on null, and honors `,string`.
+	// siteField records a mismatch, skips the value, and honors `,string`.
 	siteField siteKind = iota
-	// siteElem aborts on a mismatch and leaves the slot untouched on null.
-	// Map values bind as elements into a fresh zeroed slot.
+	// siteElem aborts on a mismatch. Map values bind as elements into a
+	// fresh zeroed slot. Either site zeroes reference kinds on null.
 	siteElem
 )
 
@@ -244,9 +243,9 @@ func (c *binder) bindSlow(dst unsafe.Pointer, ti, ctr uint32, site siteKind, quo
 		if err := c.atom(); err != nil {
 			return err
 		}
-		if site == siteField {
-			c.nullZero(dst, ti)
-		}
+		// A reused slice backing or fixed array otherwise keeps the
+		// previous element's reference.
+		c.nullZero(dst, ti)
 		return nil
 	}
 	if quoted {
@@ -658,7 +657,8 @@ func (c *binder) growSlice(sc *vbind.SlotClass, hdr *gort.SliceHeader, esz uintp
 	}
 }
 
-// bindMap binds an object from token start p past its '{' into a new map.
+// bindMap binds an object from token start p past its '{' into the map at
+// dst.
 func (c *binder) bindMap(s text, p int, dst unsafe.Pointer, ti uint32) (int, error) {
 	m := c.openMap(dst, ti)
 	if s.peek(p) == '}' {
@@ -672,8 +672,15 @@ func (c *binder) bindMap(s text, p int, dst unsafe.Pointer, ti uint32) (int, err
 	return c.mapEntries(s, p, m, ti)
 }
 
-// openMap stores at dst the prewired empty map its slot class carves.
+// openMap returns the map at dst, as native map_open does: a non-nil word
+// is a live map the entries merge into, as encoding/json merges, and nil
+// takes the prewired empty map its slot class carves. Every staging slot a
+// map binds into (region entries, carved slots, eface data words) starts
+// nil, so only a user destination holds a live map.
 func (c *binder) openMap(dst unsafe.Pointer, ti uint32) unsafe.Pointer {
+	if m := *(*unsafe.Pointer)(dst); m != nil {
+		return m
+	}
 	m := *(*unsafe.Pointer)(c.carve(c.typ(ti).Map().AllocClass))
 	*(*unsafe.Pointer)(dst) = m
 	return m

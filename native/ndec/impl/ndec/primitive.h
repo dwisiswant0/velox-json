@@ -491,7 +491,10 @@ INLINE void recbatch_free(BindSlotClass *sc, void *ptr, uint32_t cap) {
 
 /* Callers must handle STRING, pointer resolution, cold dispatch, null, and
  * quoted values before this shared switch, then provide their own slice or array
- * case after it.
+ * case after it. zero_size is the scratch extent of body: zero for a live
+ * destination the value merges into, nonzero for staging whose bytes hold no
+ * value. A struct clears that extent; a map clears its word, since map_open
+ * merges into any non-nil word.
  */
 #define BIND_VALUE_SWITCH_COMMON(ct, body, ch, cont_label, zero_size, ON_MISMATCH, push_fn)                       \
   case BIND_KIND_INT:                                                                                             \
@@ -530,6 +533,7 @@ INLINE void recbatch_free(BindSlotClass *sc, void *ptr, uint32_t cap) {
     ON_MISMATCH;                                                                                                  \
   case BIND_KIND_MAP:                                                                                             \
     if (ch == '{') {                                                                                              \
+      if ((zero_size) != 0) *(void **)(body) = NULL;                                                              \
       BIND_MAP_OPEN(m, ct, body, push_fn);                                                                        \
     }                                                                                                             \
     ON_MISMATCH;                                                                                                  \
