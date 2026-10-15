@@ -151,6 +151,7 @@ type mapSite struct {
 	stride       uint32 // entry_slot stride (16 + sizeof(V) padded to 8)
 	valSlotClass int32  // SlotClass for deferred val intermediate; -1 = N/A
 	mapRType     unsafe.Pointer
+	valRType     unsafe.Pointer // nil when V holds no pointers
 	key          *typ.UniType
 }
 
@@ -550,6 +551,10 @@ func (b *builder) collect(ut *typ.UniType) (uint32, error) {
 		if valIsDeferred {
 			valSlotClass = int32(b.registerSlotClass(mi.ValType))
 		}
+		var valRType unsafe.Pointer
+		if mi.ValHasPtr {
+			valRType = mi.ValType.Ptr
+		}
 		mp := info.Map()
 		mp.AllocClass = int32(b.registerMapSlotClass(ut))
 		info.child = uintptr(valIdx)
@@ -563,6 +568,7 @@ func (b *builder) collect(ut *typ.UniType) (uint32, error) {
 			stride:       stride,
 			valSlotClass: valSlotClass,
 			mapRType:     ut.Ptr,
+			valRType:     valRType,
 			key:          mi.KeyType,
 		})
 	case typ.KindAny:
@@ -1163,6 +1169,7 @@ func (b *builder) attachMapDrainInfos() {
 			ValSlotClass:  s.valSlotClass,
 			KeySize:       uint32(s.key.Size),
 			KeyRType:      s.key.Ptr,
+			ValRType:      s.valRType,
 		}
 		if info.KeyKind == KindTextUnmarshaler {
 			info.KeyText = s.key.Hooks.TextUnmarshalFn

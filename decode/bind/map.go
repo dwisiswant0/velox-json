@@ -248,6 +248,7 @@ func drainKVSlots(mapHdr, entriesBase unsafe.Pointer, count int, info *vbind.Map
 	valSize := uintptr(info.ValSize)
 	mapRType := info.MapRType
 	valIsDeferred := info.ValIsDeferred
+	valRType := info.ValRType
 
 	gort.MapPresize(mapRType, count, mapHdr)
 
@@ -270,7 +271,7 @@ func drainKVSlots(mapHdr, entriesBase unsafe.Pointer, count int, info *vbind.Map
 				// The generic call takes the key by address; the staged entry
 				// already holds a string header, so pass the slot itself.
 				elemInMap := gort.MapAssign(mapRType, mapHdr, slot)
-				copyMapValue(elemInMap, valSrc, valSize)
+				copyMapValue(elemInMap, valSrc, valSize, valRType)
 			}
 			return nil
 		}
@@ -285,7 +286,7 @@ func drainKVSlots(mapHdr, entriesBase unsafe.Pointer, count int, info *vbind.Map
 				valSrc = valSlot // inline value
 			}
 			elemInMap := gort.MapAssignFastStr(mapRType, mapHdr, key)
-			copyMapValue(elemInMap, valSrc, valSize)
+			copyMapValue(elemInMap, valSrc, valSize, valRType)
 		}
 		return nil
 	}
@@ -307,16 +308,21 @@ func drainKVSlots(mapHdr, entriesBase unsafe.Pointer, count int, info *vbind.Map
 		} else {
 			valSrc = valSlot
 		}
-		copyMapValue(elemInMap, valSrc, valSize)
+		copyMapValue(elemInMap, valSrc, valSize, valRType)
 	}
 	return first
 }
 
-// copyMapValue fills storage returned by mapassign. These raw stores bypass the
-// write barrier; allocator retention roots referenced backings through the drain,
-// and Release publishes them with a barriered clear before dropping those roots.
-func copyMapValue(dst, src unsafe.Pointer, valSize uintptr) {
-	if valSize > 8 {
+// copyMapValue fills storage returned by mapassign. A V holding pointers goes
+// through typedmemmove: the slot may hold a value of a live user map that this
+// assignment replaces, and its deletion barrier is the only thing shading that
+// old value once the caller's stack has been scanned. Pointer-free values take
+// raw stores. New values need no barrier here; allocator retention roots their
+// backings through the drain.
+func copyMapValue(dst, src unsafe.Pointer, valSize uintptr, valRType unsafe.Pointer) {
+	if valRType != nil {
+		gort.TypedMemmove(valRType, dst, src)
+	} else if valSize > 8 {
 		gort.Memmove(dst, src, valSize)
 	} else {
 		switch valSize {

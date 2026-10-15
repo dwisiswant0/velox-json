@@ -262,6 +262,7 @@ type MapDrainInfo struct {
 	KeySize  uint32                                   // off 28  sizeof(key)
 	KeyRType unsafe.Pointer                           // off 32  key *_type
 	KeyText  func(ptr unsafe.Pointer, b []byte) error // off 40  UnmarshalText of a KindTextUnmarshaler key
+	ValRType unsafe.Pointer                           // off 48  value *_type when V holds pointers, else nil
 }
 
 // BindAnyMeta is a read only Go/C ABI record reached through a noscan child
