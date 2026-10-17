@@ -359,12 +359,28 @@ INLINE int bind_write_quoted_scalar(uint8_t **str_pp, const uint8_t *data, uint3
     }                                                                                                             \
   } while (0)
 
-#define BIND_WRITE_EMPTY_SLICE(dst, m, type_idx)                                                                  \
+/* Installs the type's shared zero-length sentinel, a non-nil empty slice
+ * header with no capacity. */
+#define BIND_WRITE_EMPTY_SENTINEL(dst, m, type_idx)                                                               \
   do {                                                                                                            \
-    const void *_ed           = (const void *)(m)->b.ctx.type_meta[(type_idx)].u.slice.empty_slice_data;          \
-    *(const void **)(dst)     = _ed;                                                                              \
+    *(const void **)(dst)     = (const void *)(m)->b.ctx.type_meta[(type_idx)].u.slice.empty_slice_data;          \
     *(intptr_t *)((dst) + 8)  = 0;                                                                                \
     *(intptr_t *)((dst) + 16) = 0;                                                                                \
+  } while (0)
+
+/* Publishing an empty slice keeps the destination's own backing: len resets to
+ * zero while data and cap survive, so capacity a caller preallocated or an
+ * earlier array in the same document published is not lost. A nil destination
+ * takes the shared sentinel, keeping the result non-nil. */
+#define BIND_WRITE_EMPTY_SLICE(dst, m, type_idx)                                                                  \
+  do {                                                                                                            \
+    const void *_ed;                                                                                              \
+    __builtin_memcpy(&_ed, (dst), sizeof(_ed));                                                                   \
+    if (_ed != NULL) {                                                                                            \
+      *(intptr_t *)((dst) + 8) = 0;                                                                               \
+    } else {                                                                                                      \
+      BIND_WRITE_EMPTY_SENTINEL((dst), (m), (type_idx));                                                          \
+    }                                                                                                             \
   } while (0)
 
 /* A fixed array holds exactly the elements its JSON array supplied, as in
@@ -378,12 +394,15 @@ INLINE int bind_write_quoted_scalar(uint8_t **str_pp, const uint8_t *data, uint3
   } while (0)
 
 /* Publishes an array-shaped destination whose JSON array closed with no
- * element: a slice takes the shared empty backing, a fixed array zeroes every
- * element. */
+ * element: a slice keeps its destination's backing and capacity, a stream
+ * takes the shared empty backing (its batch capacity lifecycle belongs to the
+ * Go driver), and a fixed array zeroes every element. */
 #define BIND_WRITE_EMPTY_ARRAY(dst, m, ct)                                                                        \
   do {                                                                                                            \
-    if (BIND_IS_SLICE_LIKE((ct)->kind)) {                                                                         \
+    if ((ct)->kind == BIND_KIND_SLICE) {                                                                          \
       BIND_WRITE_EMPTY_SLICE((dst), (m), (ct)->type_idx);                                                         \
+    } else if (BIND_IS_SLICE_LIKE((ct)->kind)) {                                                                  \
+      BIND_WRITE_EMPTY_SENTINEL((dst), (m), (ct)->type_idx);                                                      \
     } else if ((ct)->kind == BIND_KIND_ARRAY) {                                                                   \
       BIND_ZERO_ARRAY_TAIL((dst), (m), (ct), 0);                                                                  \
     }                                                                                                             \

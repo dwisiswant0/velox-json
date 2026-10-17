@@ -529,8 +529,9 @@ func (c *binder) resolveHops(host unsafe.Pointer, hostTi uint32, f *vbind.BindFi
 }
 
 // bindArray binds an array from token start p past its '['. A slice reuses
-// its backing and grows past its capacity; its final capacity equals its
-// length. A fixed array binds in place and skips elements past its length.
+// its backing and grows past its capacity; a non-empty array leaves its
+// capacity equal to its length, and `[]` keeps the destination's capacity. A
+// fixed array binds in place and skips elements past its length.
 func (c *binder) bindArray(s text, p int, dst unsafe.Pointer, ti uint32) (int, error) {
 	if s.peek(p) == ']' {
 		// Native pushes an empty array's frame too.
@@ -544,12 +545,18 @@ func (c *binder) bindArray(s text, p int, dst unsafe.Pointer, ti uint32) (int, e
 	return c.arrayElems(s, p, dst, ti)
 }
 
-// emptyArray binds `[]`: a slice takes the shared empty backing, a fixed
-// array zeroes every element.
+// emptyArray binds `[]`: a slice keeps its destination's backing and capacity
+// with length zero, and a nil destination takes the shared empty backing; a
+// fixed array zeroes every element.
 func (c *binder) emptyArray(dst unsafe.Pointer, ti uint32) {
 	if c.typ(ti).Kind == vbind.KindSlice {
+		hdr := (*gort.SliceHeader)(dst)
+		if hdr.Data != nil {
+			hdr.Len = 0
+			return
+		}
 		sm := c.tt.TypeMeta[ti].SliceMeta()
-		*(*gort.SliceHeader)(dst) = gort.SliceHeader{Data: *(*unsafe.Pointer)(unsafe.Pointer(&sm.EmptySliceData))}
+		*hdr = gort.SliceHeader{Data: *(*unsafe.Pointer)(unsafe.Pointer(&sm.EmptySliceData))}
 		return
 	}
 	c.zeroArrayTail(dst, ti, 0)
@@ -606,11 +613,14 @@ func (c *binder) arrayElems(s text, p int, dst unsafe.Pointer, ti uint32) (int, 
 		}
 		// An element that entered a container counts in the length, as the
 		// native push of its frame published it. The elements bound so far
-		// stay charged; the rest of the tail returns to the class.
+		// stay charged; the rest of the tail returns to the class, so the
+		// header stops covering it, as the native seal does.
 		if c.descents != d0 {
 			hdr.Len = count
 		}
-		c.a.CloseSlice(sc, hdr.Data, count)
+		if c.a.CloseSlice(sc, hdr.Data, count) {
+			hdr.Cap = count
+		}
 		return p, err
 	}
 }

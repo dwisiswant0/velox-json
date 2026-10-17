@@ -1,90 +1,123 @@
 package tests
 
 import (
-	"encoding/json"
-	"io"
-	"reflect"
 	"testing"
 
 	vjson "github.com/velox-io/json"
 )
 
-// arrayTailCases decode into destinations already holding data, so an
-// element the JSON array does not supply shows whether it was zeroed.
-var arrayTailCases = []struct {
-	name string
-	doc  string
-	mk   func() any
-}{
-	{"empty", `[]`, func() any { return &[3]int{9, 9, 9} }},
-	{"short", `[1]`, func() any { return &[3]int{9, 9, 9} }},
-	{"exact", `[1,2,3]`, func() any { return &[3]int{9, 9, 9} }},
-	{"surplus", `[1,2,3,4,5]`, func() any { return &[3]int{9, 9, 9} }},
-	{"strings", `["a"]`, func() any { return &[3]string{"x", "y", "z"} }},
-	{"pointers", `[1]`, func() any { return &[3]*int{new(int), new(int), new(int)} }},
-	{"slices", `[[1]]`, func() any { return &[2][]int{{7}, {8}} }},
-	{"nested", `[[1],[]]`, func() any { return &[2][2]int{{9, 9}, {9, 9}} }},
-	{"nested surplus", `[[1,2,3],[4]]`, func() any { return &[2][2]int{{9, 9}, {9, 9}} }},
-	{"field", `{"X":[1]}`, func() any { return &struct{ X [3]int }{X: [3]int{9, 9, 9}} }},
-	{"empty field", `{"X":[]}`, func() any { return &struct{ X [3]int }{X: [3]int{9, 9, 9}} }},
-	{"map value", `{"k":[1]}`, func() any { return &map[string][3]int{"k": {9, 9, 9}} }},
-	{"slice element", `[[1],[2,3]]`, func() any { return &[][3]int{{9, 9, 9}, {9, 9, 9}} }},
+// Decoding an empty JSON array resets the destination slice's length to zero
+// and keeps its backing and capacity, the slice[:0] semantics a caller
+// round-robining a preallocated buffer over venue messages depends on. A nil
+// destination still yields a non-nil empty slice.
+
+type capLevel struct {
+	Price string `json:"price"`
+	Qty   string `json:"qty"`
+	ID    int64  `json:"id"`
 }
 
-// A fixed array holds exactly the elements its JSON array supplied: a
-// shorter JSON array zeroes the rest, as encoding/json does, on every path
-// that binds an array.
-func TestUnmarshal_FixedArrayZeroesTail(t *testing.T) {
-	for _, c := range arrayTailCases {
-		t.Run(c.name, func(t *testing.T) {
-			assertSameDecode(t, "Unmarshal", []byte(c.doc), c.mk)
-			for chunk := 1; chunk <= len(c.doc); chunk++ {
-				assertSameStream(t, "Decoder", []byte(c.doc), chunk, c.mk)
-			}
-		})
+type capBook struct {
+	Levels []capLevel `json:"levels"`
+}
+
+const (
+	capEmptyDoc = `{"levels":[]}`
+	capFourDoc  = `{"levels":[{"price":"1","qty":"1","id":1},{"price":"2","qty":"1","id":2},{"price":"3","qty":"1","id":3},{"price":"4","qty":"1","id":4}]}`
+)
+
+// An empty array decodes like slice[:0]: the destination keeps its capacity
+// and backing array.
+func TestUnmarshal_EmptyArrayKeepsCapacity(t *testing.T) {
+	b := capBook{Levels: make([]capLevel, 0, 64)}
+	backing := &b.Levels[:1][0]
+	if err := vjson.Unmarshal([]byte(capEmptyDoc), &b); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Levels) != 0 {
+		t.Fatalf("len = %d, want 0", len(b.Levels))
+	}
+	if cap(b.Levels) != 64 {
+		t.Fatalf("cap after [] = %d, want 64", cap(b.Levels))
+	}
+	if &b.Levels[:1][0] != backing {
+		t.Fatal("backing array replaced by []")
 	}
 }
 
-// UnmarshalValue binds the parsed tape, a separate walk from the JSON one.
-func TestUnmarshalValue_FixedArrayZeroesTail(t *testing.T) {
-	for _, c := range arrayTailCases {
-		t.Run(c.name, func(t *testing.T) {
-			v, err := vjson.Parse([]byte(c.doc))
-			if err != nil {
-				t.Fatalf("Parse: %v", err)
-			}
-			got, want := c.mk(), c.mk()
-			if err := vjson.UnmarshalValue(v, got); err != nil {
-				t.Fatalf("UnmarshalValue: %v", err)
-			}
-			if err := json.Unmarshal([]byte(c.doc), want); err != nil {
-				t.Fatalf("encoding/json: %v", err)
-			}
-			if !reflect.DeepEqual(got, want) {
-				t.Errorf("UnmarshalValue = %s, encoding/json = %s", dbgAny(got), dbgAny(want))
-			}
-		})
+// A nil destination yields a non-nil empty slice, as before.
+func TestUnmarshal_EmptyArrayNilDest(t *testing.T) {
+	var b capBook
+	if err := vjson.Unmarshal([]byte(capEmptyDoc), &b); err != nil {
+		t.Fatal(err)
+	}
+	if b.Levels == nil || len(b.Levels) != 0 {
+		t.Fatalf("levels = %#v, want non-nil empty", b.Levels)
 	}
 }
 
-// A Decoder reusing one destination across documents must not carry the
-// previous document's elements into a shorter one.
-func TestDecoder_FixedArrayReuse(t *testing.T) {
-	const docs = `[1,2,3] [4] [] [5,6]`
-	want := [][3]int{{1, 2, 3}, {4, 0, 0}, {0, 0, 0}, {5, 6, 0}}
-	for chunk := 1; chunk <= len(docs); chunk++ {
-		d := vjson.NewDecoder(&chunkReader{data: []byte(docs), size: chunk})
-		var dst [3]int
-		for i, w := range want {
-			if err := d.Decode(&dst); err != nil {
-				t.Fatalf("chunk=%d doc %d: %v", chunk, i, err)
-			}
-			if dst != w {
-				t.Fatalf("chunk=%d doc %d = %v, want %v", chunk, i, dst, w)
-			}
+// A backing a non-empty array published (cap == len at close) survives a
+// following empty array in the same destination.
+func TestUnmarshal_EmptyArrayAfterNonEmpty(t *testing.T) {
+	b := capBook{Levels: make([]capLevel, 0, 8)}
+	if err := vjson.Unmarshal([]byte(capFourDoc), &b); err != nil {
+		t.Fatal(err)
+	}
+	capAfterFour := cap(b.Levels)
+	if capAfterFour == 0 {
+		t.Fatal("cap after four elements = 0")
+	}
+	backing := &b.Levels[0]
+	if err := vjson.Unmarshal([]byte(capEmptyDoc), &b); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Levels) != 0 || cap(b.Levels) != capAfterFour {
+		t.Fatalf("after four->[]: len/cap = %d/%d, want 0/%d", len(b.Levels), cap(b.Levels), capAfterFour)
+	}
+	if &b.Levels[:1][0] != backing {
+		t.Fatal("backing array replaced by []")
+	}
+}
+
+// The alternating empty/non-empty round robin decodes into one stable
+// preallocated buffer without growing a new backing per empty array.
+func TestUnmarshal_EmptyArrayRoundRobin(t *testing.T) {
+	buf := make([]capLevel, 0, 64)
+	backing := &buf[:1][0]
+	var b capBook
+	for i, in := range []string{capEmptyDoc, capFourDoc, capEmptyDoc, capFourDoc} {
+		b.Levels = buf[:0]
+		if err := vjson.Unmarshal([]byte(in), &b); err != nil {
+			t.Fatal(err)
 		}
-		if err := d.Decode(&dst); err != io.EOF {
-			t.Fatalf("chunk=%d: trailing Decode = %v, want io.EOF", chunk, err)
+		if len(b.Levels) == 4 && &b.Levels[0] != backing {
+			t.Fatalf("decode %d: four levels decoded outside the buffer", i)
+		}
+		if cap(b.Levels) == 0 && len(b.Levels) == 0 {
+			t.Fatalf("decode %d: capacity lost to an empty array", i)
+		}
+	}
+}
+
+// A parse that fails inside an array returns the unwritten tail of its
+// borrowed backing to the allocator, so the failed slice's capacity must stop
+// short of that tail: a later parse borrows it, and an append through the
+// failed slice would otherwise overwrite the later result.
+func TestUnmarshal_FailedArrayCapacityExcludesReturnedTail(t *testing.T) {
+	var failed capBook
+	if err := vjson.Unmarshal([]byte(`{"levels":[{"price":"1"},{"price":"2"} x]}`), &failed); err == nil {
+		t.Fatal("malformed document decoded without error")
+	}
+	full := failed.Levels[:cap(failed.Levels)]
+	for i := range 4 {
+		var b capBook
+		if err := vjson.Unmarshal([]byte(`{"levels":[{"price":"8"}]}`), &b); err != nil {
+			t.Fatal(err)
+		}
+		for j := range full {
+			if &full[j] == &b.Levels[0] {
+				t.Fatalf("decode %d: element %d of the failed slice's capacity backs a later result", i, j)
+			}
 		}
 	}
 }

@@ -619,14 +619,18 @@ func (sc *SlotClass) IsBumpTail() bool {
 // backing would otherwise match the stale start. A slice rebound in place
 // over a backing it found in the block, from a repeated key or a caller
 // header, borrowed nothing and leaves the ledger alone.
-func (sc *SlotClass) CommitBump(data unsafe.Pointer, end uintptr, count int) {
+//
+// It reports whether the tail returned. The next borrower takes that tail, so
+// the borrower's header must then hold a capacity of at most count.
+func (sc *SlotClass) CommitBump(data unsafe.Pointer, end uintptr, count int) bool {
 	off := uintptr(data) - uintptr(sc.Block)
 	if sc.Offset != sc.Limit || off != uintptr(sc.BorrowStart) || off >= uintptr(sc.Limit) {
-		return
+		return false
 	}
 	sc.Offset = uint32(end - uintptr(sc.Block))
 	sc.Len += uint32(count)
 	sc.BorrowStart = sc.Limit
+	return true
 }
 
 // This overlay is valid only when Mode is slotBump. Offset 40 holds MuBlock,

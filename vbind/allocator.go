@@ -734,14 +734,15 @@ func (a *Allocator) GrowSlice(sc *SlotClass, hdr *gort.SliceHeader) {
 	r.free(old, uint32(oldCap))
 }
 
-// CloseSlice commits the first n elements at data to the class ledger; see
-// SlotClass.CommitBump. A failed bind closes its open slices the same way, as
-// their written elements stay charged.
-func (a *Allocator) CloseSlice(sc *SlotClass, data unsafe.Pointer, n int) {
+// CloseSlice commits the first n elements at data to the class ledger and
+// reports whether the unwritten tail returned; see SlotClass.CommitBump. A
+// failed bind closes its open slices the same way, as their written elements
+// stay charged.
+func (a *Allocator) CloseSlice(sc *SlotClass, data unsafe.Pointer, n int) bool {
 	if sc.Mode != slotBump {
-		return
+		return false
 	}
-	sc.CommitBump(data, uintptr(data)+uintptr(n)*uintptr(sc.ElemSize), n)
+	return sc.CommitBump(data, uintptr(data)+uintptr(n)*uintptr(sc.ElemSize), n)
 }
 
 // takeSpare removes and returns the smallest spare of sc holding at least n

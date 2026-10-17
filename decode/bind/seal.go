@@ -3,6 +3,7 @@ package bind
 import (
 	"unsafe"
 
+	"github.com/velox-io/json/gort"
 	"github.com/velox-io/json/native/ndec"
 	"github.com/velox-io/json/vbind"
 )
@@ -87,5 +88,9 @@ func sealSliceFrame(p *Parser, tree *vbind.TypeTree, kind vbind.Kind, typeIdx ui
 		return
 	}
 	n := (aux - uintptr(data)) / uintptr(sc.ElemSize)
-	sc.CommitBump(data, aux, int(n))
+	if sc.CommitBump(data, aux, int(n)) {
+		// The returned tail goes to the next borrower, so the header stops
+		// covering it, as array_close clamps the capacity to the count.
+		(*gort.SliceHeader)(dst).Cap = int(n)
+	}
 }
