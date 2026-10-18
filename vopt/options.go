@@ -49,6 +49,8 @@ const (
 	flagIndent
 	// flagBufSize marks bufSize as carried. Encode only.
 	flagBufSize
+	// flagSlotBatchMax marks slotBatchMax as carried. Decode only.
+	flagSlotBatchMax
 )
 
 // Options is one option or a set of them. The zero value names nothing and
@@ -60,6 +62,7 @@ type Options struct {
 	bufSize      int
 	indentPrefix string
 	indentStep   string
+	slotBatchMax int
 }
 
 // boolOpt builds a single-entry Options for f.
@@ -123,6 +126,15 @@ func BufSize(n int) Options {
 	return Options{set: flagBufSize, val: flagBufSize, bufSize: n}
 }
 
+// SlotBatchMax caps the elements in each allocation block a decode carves for
+// a Go type, and the size at which a growing slice bypasses the shared block
+// for a standalone backing. A smaller value lowers the memory a decode retains
+// per type at the cost of more block refills. See vjson.WithSlotBatchMax for
+// the clamping rule.
+func SlotBatchMax(n int) Options {
+	return Options{set: flagSlotBatchMax, val: flagSlotBatchMax, slotBatchMax: n}
+}
+
 // Join merges opts left to right. A later value overrides an earlier one for
 // the options it names, and leaves the rest untouched.
 func Join(opts ...Options) Options {
@@ -135,6 +147,9 @@ func Join(opts ...Options) Options {
 		}
 		if o.set&flagBufSize != 0 {
 			dst.bufSize = o.bufSize
+		}
+		if o.set&flagSlotBatchMax != 0 {
+			dst.slotBatchMax = o.slotBatchMax
 		}
 	}
 	return dst
@@ -156,3 +171,7 @@ func (o Options) Indent() (prefix, step string, ok bool) {
 
 // BufSize returns the carried starting buffer size, or 0 if none was set.
 func (o Options) BufSize() int { return o.bufSize }
+
+// SlotBatchMax returns the carried allocation-block ceiling and whether it was
+// set.
+func (o Options) SlotBatchMax() (int, bool) { return o.slotBatchMax, o.set&flagSlotBatchMax != 0 }

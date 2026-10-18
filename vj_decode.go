@@ -64,6 +64,15 @@ func ZeroCopy(v bool) Options { return vopt.ZeroCopy(v) }
 // syntax error.
 func SkipLenient(v bool) Options { return vopt.SkipLenient(v) }
 
+// WithSlotBatchMax caps the number of elements in each allocation block a
+// decode carves for a Go type, and the size at which a growing slice bypasses
+// the shared block for a standalone backing. Lowering it lowers the memory a
+// decode retains per type, at the cost of more block refills; raising it
+// amortizes those refills instead. The default is 128, or 32 for recursive
+// type trees, where a smaller block bounds the cross-parse backing chain.
+// Values outside [1, 128] restore the default. Decode only.
+func WithSlotBatchMax(n int) Options { return vopt.SlotBatchMax(n) }
+
 // PaddingSize is the minimum number of 0x20 padding bytes a buffer must
 // carry past its length to be usable with UnmarshalPadded / ParsePadded.
 // Callers that manage their own buffer without calling Pad must reserve at

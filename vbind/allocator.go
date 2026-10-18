@@ -264,25 +264,29 @@ func (r *RecBumpSlotClass) reset() {
 type AllocOption func(*Allocator)
 
 // WithSlotBatchMax sets the block ceiling and bypass threshold; values
-// outside [1, SlotBatchMax] fall back to SlotBatchMax.
+// outside [1, SlotBatchMax] restore the tree-aware default.
 func WithSlotBatchMax(n uint32) AllocOption {
-	return func(a *Allocator) {
-		if n == 0 || n > SlotBatchMax {
+	return func(a *Allocator) { a.SetSlotBatchMax(n) }
+}
+
+// SetSlotBatchMax overrides the block ceiling for blocks installed from now
+// on; values outside [1, SlotBatchMax] restore the tree-aware default. Blocks
+// already installed keep their size.
+func (a *Allocator) SetSlotBatchMax(n uint32) {
+	switch {
+	case n == 0 || n > SlotBatchMax:
+		if a.Tree.GroupCount > 0 {
+			n = defaultSlotBatchRecursive
+		} else {
 			n = SlotBatchMax
 		}
-		a.slotBatchMax = n
 	}
+	a.slotBatchMax = n
 }
 
 func NewAllocator(tt *TypeTree, opts ...AllocOption) *Allocator {
 	a := &Allocator{Tree: tt}
-
-	// Smaller recursive batches limit the cross-parse backing chain.
-	if tt.GroupCount > 0 {
-		a.slotBatchMax = defaultSlotBatchRecursive
-	} else {
-		a.slotBatchMax = SlotBatchMax
-	}
+	a.SetSlotBatchMax(0)
 	for _, o := range opts {
 		o(a)
 	}

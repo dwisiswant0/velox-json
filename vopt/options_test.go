@@ -29,6 +29,9 @@ func TestZeroValueNamesNothing(t *testing.T) {
 	if o.BufSize() != 0 {
 		t.Fatalf("zero Options BufSize() = %d, want 0", o.BufSize())
 	}
+	if _, ok := o.SlotBatchMax(); ok {
+		t.Fatal("zero Options SlotBatchMax() ok = true, want false")
+	}
 }
 
 func TestConstructorsNameTheirFlag(t *testing.T) {
@@ -127,5 +130,14 @@ func TestJoinCarriesIndentAndBufSize(t *testing.T) {
 	o = Join(BufSize(4096), BufSize(64))
 	if o.BufSize() != 64 {
 		t.Fatalf("BufSize override = %d, want 64", o.BufSize())
+	}
+
+	o = Join(SlotBatchMax(16), UseNumber(true))
+	if n, ok := o.SlotBatchMax(); !ok || n != 16 {
+		t.Fatalf("SlotBatchMax after Join = (%d, %v), want (16, true)", n, ok)
+	}
+	o = Join(SlotBatchMax(16), SlotBatchMax(4))
+	if n, _ := o.SlotBatchMax(); n != 4 {
+		t.Fatalf("SlotBatchMax override = %d, want 4", n)
 	}
 }

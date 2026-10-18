@@ -452,6 +452,62 @@ func TestSkipLenient_DoesNotStickAcrossParserCalls(t *testing.T) {
 	}
 }
 
+// --- SlotBatchMax ---
+
+type slotBatchTarget struct {
+	V []int `json:"v"`
+}
+
+// TestSlotBatchMax_CapsInstalledBlocks grows a slice past the requested ceiling
+// and checks every block the allocator installed stays within it. Growth beyond
+// the ceiling takes the standalone bypass, which is not a shared block.
+func TestSlotBatchMax_CapsInstalledBlocks(t *testing.T) {
+	const ceiling = 16
+	src := []byte(`{"v":[` + strings.Repeat("1,", 299) + `1]}`)
+	p, err := NewParser[slotBatchTarget]()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	var dst slotBatchTarget
+	if err = p.Unmarshal(src, &dst, vopt.SlotBatchMax(ceiling)); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(dst.V) != 300 {
+		t.Fatalf("len(V) = %d, want 300", len(dst.V))
+	}
+	for i := range p.alloc.Slots {
+		if got := p.alloc.Slots[i].Cap; got > ceiling {
+			t.Errorf("slot class %d block Cap = %d, want <= %d", i, got, ceiling)
+		}
+	}
+}
+
+// TestSlotBatchMax_DoesNotStickAcrossParserCalls guards the per-call reset: a
+// reused Parser must return to its tree-aware default when a call omits the
+// option. A default-ceiling growth then lands on a block above the 16 used
+// before.
+func TestSlotBatchMax_DoesNotStickAcrossParserCalls(t *testing.T) {
+	p, err := NewParser[slotBatchTarget]()
+	if err != nil {
+		t.Fatalf("NewParser: %v", err)
+	}
+	var dst slotBatchTarget
+	if err = p.Unmarshal([]byte(`{"v":[1,2,3]}`), &dst, vopt.SlotBatchMax(16)); err != nil {
+		t.Fatalf("with option: %v", err)
+	}
+	big := []byte(`{"v":[` + strings.Repeat("1,", 299) + `1]}`)
+	if err = p.Unmarshal(big, &dst); err != nil {
+		t.Fatalf("without option: %v", err)
+	}
+	maxCap := uint32(0)
+	for i := range p.alloc.Slots {
+		maxCap = max(maxCap, p.alloc.Slots[i].Cap)
+	}
+	if maxCap <= 16 {
+		t.Fatalf("largest block Cap = %d after an option-free call, want a default-sized block", maxCap)
+	}
+}
+
 func TestRejectInvalidUTF8_UnmarshalValueDoesNotRescan(t *testing.T) {
 	src := []byte{'{', '"', 'v', '"', ':', '"', 0xff, '"', '}'}
 	var doc strictScanValueTarget

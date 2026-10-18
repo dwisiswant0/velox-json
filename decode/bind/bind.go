@@ -46,12 +46,26 @@ func optFlagsOf(o vopt.Options) uint32 {
 	return flags
 }
 
-// applyOpts sets p.optFlags for a drive whose input cannot be aliased, and
-// returns the resolved options so the entry can reject a zero-copy demand.
+// applyOpts sets p.optFlags and the allocator ceiling for a drive whose input
+// cannot be aliased, and returns the resolved options so the entry can reject a
+// zero-copy demand.
 func applyOpts(p *Parser, opts []UnmarshalOption) vopt.Options {
 	o := vopt.Join(opts...)
 	p.optFlags = optFlagsOf(o)
+	p.applySlotBatchMax(o)
 	return o
+}
+
+// applySlotBatchMax applies the call's block ceiling. A call that does not name
+// the option restores the tree-aware default because parsers are pooled across
+// calls, so an earlier call's ceiling must not stick.
+func (p *Parser) applySlotBatchMax(o vopt.Options) {
+	n, ok := o.SlotBatchMax()
+	if !ok || n < 1 || n > vbind.SlotBatchMax {
+		p.alloc.SetSlotBatchMax(0)
+		return
+	}
+	p.alloc.SetSlotBatchMax(uint32(n))
 }
 
 // contiguousOptFlags resolves o for a drive over caller-owned bytes, which
@@ -78,13 +92,16 @@ func contiguousOptFlags(tt *vbind.TypeTree, o vopt.Options) (uint32, error) {
 func resolveContiguousOpts(p *Parser, opts []UnmarshalOption) error {
 	if len(opts) == 0 {
 		p.optFlags = p.defaultOptFlags
+		p.alloc.SetSlotBatchMax(0)
 		return nil
 	}
-	flags, err := contiguousOptFlags(p.tt, vopt.Join(opts...))
+	o := vopt.Join(opts...)
+	flags, err := contiguousOptFlags(p.tt, o)
 	if err != nil {
 		return err
 	}
 	p.optFlags = flags
+	p.applySlotBatchMax(o)
 	return nil
 }
 

@@ -643,11 +643,21 @@ func TestWithSlotBatchMaxClamped(t *testing.T) {
 	tt := makeTreeForGrow(t)
 	a := NewAllocator(tt, WithSlotBatchMax(0))
 	if a.slotBatchMax != SlotBatchMax {
-		t.Errorf("slotBatchMax(0) = %d, want %d (0 clamps to ceiling)", a.slotBatchMax, SlotBatchMax)
+		t.Errorf("slotBatchMax(0) = %d, want %d (0 restores the default)", a.slotBatchMax, SlotBatchMax)
 	}
 	a = NewAllocator(tt, WithSlotBatchMax(SlotBatchMax*2))
 	if a.slotBatchMax != SlotBatchMax {
 		t.Errorf("slotBatchMax(2x) = %d, want %d (oversize clamps to ceiling)", a.slotBatchMax, SlotBatchMax)
+	}
+	a = NewAllocator(makeTreeForGrowRecursive(t))
+	a.SetSlotBatchMax(16)
+	if a.slotBatchMax != 16 {
+		t.Errorf("SetSlotBatchMax(16) = %d, want 16", a.slotBatchMax)
+	}
+	a.SetSlotBatchMax(0)
+	if a.slotBatchMax != defaultSlotBatchRecursive {
+		t.Errorf("SetSlotBatchMax(0) on a recursive tree = %d, want %d",
+			a.slotBatchMax, defaultSlotBatchRecursive)
 	}
 }
 

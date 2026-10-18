@@ -177,6 +177,35 @@ func TestDecoderSizingOptions(t *testing.T) {
 	}
 }
 
+// WithSlotBatchMax is a decode option: it bounds the allocation blocks a
+// decode installs without changing the decoded value.
+func TestWithSlotBatchMax(t *testing.T) {
+	type rec struct {
+		V []int `json:"v"`
+	}
+	src := []byte(`{"v":[` + strings.Repeat("7,", 299) + `7]}`)
+	var want, got rec
+	if err := json.Unmarshal(src, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := vjson.Unmarshal(src, &got, vjson.WithSlotBatchMax(16)); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("decoded %d elements, encoding/json %d, or their contents differ", len(got.V), len(want.V))
+	}
+
+	// The option composes with the rest through Join.
+	got = rec{}
+	opts := vjson.Join(vjson.WithSlotBatchMax(4), vjson.UseNumber(true))
+	if err := vjson.Unmarshal(src, &got, opts); err != nil {
+		t.Fatalf("Unmarshal with Join: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Join decode differs from encoding/json")
+	}
+}
+
 type apiKindofHost struct {
 	Val any `json:"val" vjson:"kindof"`
 }
