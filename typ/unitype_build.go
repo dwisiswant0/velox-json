@@ -411,15 +411,24 @@ func buildPointerTypeInfo(t reflect.Type, building map[reflect.Type]*UniType) *P
 }
 
 // collectStructFields matches encoding/json field promotion rules.
-// Direct fields win, shallower embedded fields win, and same-depth conflicts
-// cancel. Unexported anonymous structs may still promote exported children.
+// Direct fields win, shallower embedded fields win, and at one depth the
+// only tagged field of a key beats its untagged rivals. Unexported anonymous
+// structs may still promote exported children.
 //
 // The second result lists shapes that cannot be represented; see
 // StructTypeInfo.Rejects for why they travel as data rather than an error.
 func collectStructFields(t reflect.Type, baseOffset uintptr, building map[reflect.Type]*UniType) ([]StructField, []string) {
 	type nameInfo struct {
 		depth int
-		index int // index in fields[]; -1 = canceled
+		index int // index in fields[]; -1 = no field selected
+
+		// Candidates at depth, split by whether a json tag named the field.
+		// The idx fields name each class's first candidate and matter only
+		// while its count is one.
+		tagged      int
+		taggedIdx   int
+		untagged    int
+		untaggedIdx int
 	}
 	type bfsEntry struct {
 		typ       reflect.Type
@@ -441,39 +450,70 @@ func collectStructFields(t reflect.Type, baseOffset uintptr, building map[reflec
 	var rejects []string
 	names := make(map[string]*nameInfo)
 
-	addField := func(sf StructField, depth int, idxPath []int) {
-		name := sf.JSONName
-		if ni, ok := names[name]; ok {
-			if ni.depth < depth {
-				return
-			}
-			if ni.depth == depth {
-				if ni.index >= 0 {
-					// Two reserve-unknown fields reaching the same depth is a
-					// mistake, not a name collision the author can have meant:
-					// the name is a synthetic sentinel, so no JSON key selects
-					// either one and both would silently stay empty. Ordinary
-					// same-name fields still cancel without comment.
-					if name == ReserveUnknownName {
-						rejects = append(rejects, fmt.Sprintf(
-							"struct %s has two `json:\",embed\"` value.Value fields at the same embedding depth; a struct reserves unknown keys into at most one field",
-							t))
-					}
-					fields[ni.index].sf = StructField{}
-					ni.index = -1
-				}
-				return
-			}
+	// addField folds one candidate into its key's record. Of a key's fields
+	// at the shallowest depth, the only tagged one beats any number of
+	// untagged ones, and with no tagged candidate only a lone untagged one
+	// survives; any other tie cancels the key. A deeper field never
+	// displaces a shallower one.
+	addField := func(sf StructField, depth int, idxPath []int, tagged bool) {
+		pos := len(fields)
+		fields = append(fields, fieldWithOrder{sf, idxPath})
+
+		ni, ok := names[sf.JSONName]
+		if !ok {
+			ni = &nameInfo{depth: depth, index: -1}
+			names[sf.JSONName] = ni
+		} else if ni.depth < depth {
+			fields[pos].sf = StructField{}
+			return
+		} else if ni.depth > depth {
+			// The BFS visits depths in order, so a shallower arrival cannot
+			// follow a deeper record; kept so the invariant holds by
+			// construction rather than by walk order.
 			if ni.index >= 0 {
 				fields[ni.index].sf = StructField{}
 			}
-			ni.depth = depth
-			ni.index = len(fields)
-			fields = append(fields, fieldWithOrder{sf, idxPath})
-			return
+			*ni = nameInfo{depth: depth, index: -1}
 		}
-		names[name] = &nameInfo{depth: depth, index: len(fields)}
-		fields = append(fields, fieldWithOrder{sf, idxPath})
+
+		if tagged {
+			ni.tagged++
+			if ni.tagged == 1 {
+				ni.taggedIdx = pos
+			}
+		} else {
+			ni.untagged++
+			if ni.untagged == 1 {
+				ni.untaggedIdx = pos
+			}
+		}
+
+		// Two reserve-unknown fields reaching the same depth is a
+		// mistake, not a name collision the author can have meant:
+		// the name is a synthetic sentinel, so no JSON key selects
+		// either one and both would silently stay empty. Ordinary
+		// same-name fields still cancel without comment.
+		if sf.JSONName == ReserveUnknownName && ni.tagged+ni.untagged == 2 {
+			rejects = append(rejects, fmt.Sprintf(
+				"struct %s has two `json:\",embed\"` value.Value fields at the same embedding depth; a struct reserves unknown keys into at most one field",
+				t))
+		}
+
+		old := ni.index
+		switch {
+		case ni.tagged == 1:
+			ni.index = ni.taggedIdx
+		case ni.untagged == 1:
+			ni.index = ni.untaggedIdx
+		default:
+			ni.index = -1
+		}
+		if old >= 0 && old != ni.index {
+			fields[old].sf = StructField{}
+		}
+		if ni.index != pos {
+			fields[pos].sf = StructField{}
+		}
 	}
 
 	collectDirect := func(st reflect.Type, base uintptr, depth int, parentPath []int, ptrPath []PtrHop, ambiguous bool) []bfsEntry {
@@ -584,6 +624,12 @@ func collectStructFields(t reflect.Type, baseOffset uintptr, building map[reflec
 					hop := PtrHop{
 						SlotOffset:  base + rf.Offset,
 						PointeeType: partialUniTypeOf(ft, building),
+						// The hop slot is the embedded pointer field itself,
+						// and reflect stores into it only when the field is
+						// exported. The field name is what decides: an alias
+						// can export it over an unexported pointee type, or
+						// the reverse.
+						Unsettable: !rf.IsExported(),
 					}
 					// Copied rather than appended in place: sibling embeds at
 					// this level share the parent's slice header, and append
@@ -735,7 +781,7 @@ func collectStructFields(t reflect.Type, baseOffset uintptr, building map[reflec
 				sf.IsZeroFn = nil
 			}
 
-			addField(sf, depth, idxPath)
+			addField(sf, depth, idxPath, jsonTagName != "")
 
 			// A type reached by more than one path at this depth promotes an
 			// ambiguous selector, so the name must cancel rather than let the
@@ -744,7 +790,7 @@ func collectStructFields(t reflect.Type, baseOffset uintptr, building map[reflec
 			// same name a second time supplies it. encoding/json does the same
 			// (encode.go counts multiplicity and appends a second copy).
 			if ambiguous {
-				addField(sf, depth, idxPath)
+				addField(sf, depth, idxPath, jsonTagName != "")
 			}
 		}
 		return nextLevel

@@ -230,19 +230,23 @@ _Static_assert(offsetof(BindTypeMeta, u.strct.ptr_hops) == 24, "BindTypeMeta.u.s
 /*
  * Layout matches vbind.BindPtrHop. Each record crosses one embedded pointer,
  * allocating the pointee from alloc_class when NULL. The sign bit marks the last
- * record because valid SlotClass indices are nonnegative.
+ * record because valid SlotClass indices are nonnegative. Bit 30 marks a slot
+ * the allocation must refuse: an embedded pointer field that is unexported,
+ * which reflect cannot store into and encoding/json reports as an error once
+ * a promoted key reaches a nil one.
  */
 typedef struct BindPtrHop {
   uint32_t slot_offset; /* off 0, byte offset from the previous hop base */
-  int32_t alloc_class;  /* off 4, SlotClass index with optional BIND_PTR_HOP_LAST */
+  int32_t alloc_class;  /* off 4, SlotClass index with BIND_PTR_HOP_LAST / _UNSETTABLE */
 } BindPtrHop;
 _Static_assert(sizeof(BindPtrHop) == 8, "BindPtrHop size drift");
 _Static_assert(offsetof(BindPtrHop, slot_offset) == 0, "BindPtrHop.slot_offset");
 _Static_assert(offsetof(BindPtrHop, alloc_class) == 4, "BindPtrHop.alloc_class");
 
-#define BIND_PTR_HOP_LAST       ((int32_t)(1u << 31))
-#define BIND_PTR_HOP_CLASS(h)   ((h)->alloc_class & ~BIND_PTR_HOP_LAST)
-#define BIND_PTR_HOP_IS_LAST(h) (((h)->alloc_class & BIND_PTR_HOP_LAST) != 0)
+#define BIND_PTR_HOP_LAST        ((int32_t)(1u << 31))
+#define BIND_PTR_HOP_UNSETTABLE  ((int32_t)(1u << 30))
+#define BIND_PTR_HOP_CLASS(h)    ((h)->alloc_class & ~(BIND_PTR_HOP_LAST | BIND_PTR_HOP_UNSETTABLE))
+#define BIND_PTR_HOP_IS_LAST(h)  (((h)->alloc_class & BIND_PTR_HOP_LAST) != 0)
 
 /*
  * Each map region stores this header before its entries in the shared noscan map
@@ -602,6 +606,10 @@ enum {
    * index for a variant. */
   BIND_ERR_KINDOF_COLD_CASE  = 39,
   BIND_ERR_VARIANT_COLD_CASE = 40,
+  /* A promoted field reached across a nil embedded pointer whose slot the
+   * allocation must not write: the embedded pointer field is unexported, so
+   * encoding/json reports the field as unsettable rather than allocating. */
+  BIND_ERR_UNSETTABLE_EMBED = 41,
 };
 
 /*

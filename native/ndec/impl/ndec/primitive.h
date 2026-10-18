@@ -855,6 +855,9 @@ INLINE int bind_skip_string_ok(const uint8_t *body) {
  * nested field, not its embedded host pointer. Existing pointees are always
  * reused. A BLOCK_FULL resume restarts at hop zero, and published hops make that
  * replay idempotent instead of allocating duplicate pointees.
+ * A nil hop the slot cannot store an allocation into is an error rather than a
+ * write: the embedded pointer field is unexported, and encoding/json reports
+ * the field as unsettable instead of allocating it.
  */
 #define BIND_RESOLVE_FIELD_HOPS(m, dst, f, hops_base, phase)                                                      \
   do {                                                                                                            \
@@ -863,6 +866,8 @@ INLINE int bind_skip_string_ok(const uint8_t *body) {
       uint8_t **_slot   = (uint8_t **)((dst) + _hop->slot_offset);                                                \
       uint8_t *_pointee = *_slot;                                                                                 \
       if (_pointee == NULL) {                                                                                     \
+        if (UNLIKELY((_hop->alloc_class & BIND_PTR_HOP_UNSETTABLE) != 0))                                         \
+          BIND_YIELD_ERR_NO_POS(m, BIND_ERR_UNSETTABLE_EMBED, 0);                                                 \
         int32_t _ci        = BIND_PTR_HOP_CLASS(_hop);                                                            \
         BindSlotClass *_sc = &(m)->b.alloc.slot_classes[_ci];                                                     \
         if (_sc->offset >= _sc->limit) {                                                                          \

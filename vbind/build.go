@@ -319,6 +319,9 @@ func (b *builder) collect(ut *typ.UniType) (uint32, error) {
 					// Each pointee gets a SlotClass so native can allocate one when
 					// the pointer is nil, the same way a plain *T field does.
 					cls := int32(b.registerSlotClass(hop.PointeeType))
+					if hop.Unsettable {
+						cls |= ptrHopUnsettableBit
+					}
 					if h == len(f.PtrPath)-1 {
 						cls |= ptrHopLastBit
 					}

@@ -82,6 +82,53 @@ Test(bind_m1, struct_fields, .init = fx_setup) {
   hx_destroy(&d);
 }
 
+/* A field promoted across an unexported embedded pointer field cannot be
+ * stored into: encoding/json reports the field as unsettable, so a promoted
+ * key reaching a nil slot is an error, while an absent key or a set slot
+ * decodes normally. */
+Test(bind_m1, unsettable_embed_hop, .init = fx_setup) {
+  FxTree *fx = &g_fx;
+  typedef struct {
+    int64_t q; /* off 0, inside the embedded pointee */
+  } Emb;
+  typedef struct {
+    Emb *inner; /* off 0, embedded pointer to an unexported type */
+    int64_t r;  /* off 8 */
+  } Dst;
+
+  uint16_t t_emb = fx_struct(fx, sizeof(Emb));
+  fx_fld(fx, t_emb, "q", fx->t_i64, offsetof(Emb, q), 0);
+  fx_struct_done(fx, t_emb);
+
+  uint16_t ts = fx_struct(fx, sizeof(Dst));
+  fx_fld_hops(fx, ts, "q", fx->t_i64, offsetof(Emb, q),
+              (const uint32_t[]){offsetof(Dst, inner)}, 1, sizeof(Emb), 1);
+  fx_fld(fx, ts, "r", fx->t_i64, offsetof(Dst, r), 0);
+  fx_struct_done(fx, ts);
+  fx_build(fx);
+
+  HxDriver d;
+  hx_init(&d, fx, (HxOpts){0});
+
+  Dst dst = {0};
+  cr_assert(hx_run_json(&d, "{\"q\":1,\"r\":2}", 13, ts, &dst, 0) == 1);
+  cr_assert(d.err == BIND_ERR_UNSETTABLE_EMBED);
+
+  /* An absent key never walks the hop. */
+  memset(&dst, 0, sizeof(dst));
+  cr_assert(hx_run_json(&d, "{\"r\":2}", 7, ts, &dst, 0) == 0);
+  cr_assert(dst.inner == NULL && dst.r == 2);
+
+  /* A set slot needs no store, so the promoted field binds through it. */
+  Emb emb = {0};
+  memset(&dst, 0, sizeof(dst));
+  dst.inner = &emb;
+  cr_assert(hx_run_json(&d, "{\"q\":1,\"r\":2}", 13, ts, &dst, 0) == 0);
+  cr_assert(emb.q == 1 && dst.r == 2);
+
+  hx_destroy(&d);
+}
+
 /* A `,string` body spelling null binds as null: scalars keep their value, a
  * pointer field takes the raw spelling as its own null, and an escaped
  * spelling leaves the reached pointee untouched. */

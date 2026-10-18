@@ -22,6 +22,7 @@
 #define FX_MAX_TYPES   64
 #define FX_MAX_FIELDS  256
 #define FX_MAX_SLOTS   48
+#define FX_MAX_HOPS    64
 #define FX_MAX_POLY    16
 #define FX_POLY_CASES  80
 #define FX_MAPINFO     16
@@ -67,6 +68,10 @@ typedef struct FxTree {
   const char *names[FX_MAX_FIELDS];
   int n_fields;
   int field_base[FX_MAX_TYPES];
+
+  BindPtrHop hops[FX_MAX_HOPS]; /* per-struct contiguous runs */
+  int n_hops;
+  int hop_base[FX_MAX_TYPES];
 
   BindSlotClass slots[FX_MAX_SLOTS]; /* backing block installed by the driver */
   int n_slots;
@@ -243,6 +248,7 @@ static uint16_t fx_struct(FxTree *t, uint32_t size) {
   uint16_t idx = fx_new_type(t, BIND_KIND_STRUCT, 0);
   t->meta[idx].size    = size;
   t->field_base[idx]   = t->n_fields;
+  t->hop_base[idx]     = t->n_hops;
   return idx;
 }
 
@@ -265,6 +271,32 @@ static int fx_fld(FxTree *t, uint16_t st, const char *name, uint16_t type_idx, u
   f->flags      = flags | type_flags;
   t->names[t->n_fields] = name;
   t->n_fields++;
+  return ord;
+}
+
+/* Append a field promoted across embedded pointers. slot_offs lists each
+ * pointer word's offset relative to the base the previous hop establishes, and
+ * off locates the field inside the last pointee. pointee_size backs every
+ * hop's allocation slot. unsettable mirrors an unexported embedded pointer
+ * field, a slot the machine must refuse to allocate. */
+static int fx_fld_hops(FxTree *t, uint16_t st, const char *name, uint16_t type_idx, uint32_t off,
+                       const uint32_t *slot_offs, int n_hops, uint32_t pointee_size,
+                       int unsettable) {
+  FX_CHECK(t->types[st].kind == BIND_KIND_STRUCT);
+  FX_CHECK(n_hops >= 1 && t->n_hops + n_hops <= FX_MAX_HOPS);
+  int sc    = fx_slot(t, pointee_size);
+  int start = t->n_hops - t->hop_base[st];
+  FX_CHECK(start <= 0xFFFF);
+  for (int i = 0; i < n_hops; i++) {
+    int32_t cls = (int32_t)sc;
+    if (unsettable) cls |= BIND_PTR_HOP_UNSETTABLE;
+    if (i == n_hops - 1) cls |= BIND_PTR_HOP_LAST;
+    t->hops[t->n_hops].slot_offset = slot_offs[i];
+    t->hops[t->n_hops].alloc_class = cls;
+    t->n_hops++;
+  }
+  int ord = fx_fld(t, st, name, type_idx, off, 0);
+  t->fields[t->n_fields - 1].flags |= BIND_FF_VIA_PTR | ((uint32_t)start << 16);
   return ord;
 }
 
@@ -302,7 +334,8 @@ static void fx_struct_done(FxTree *t, uint16_t st) {
   t->meta[st].u.strct.lookup       = fx_lookup_blob(t, &t->names[base], n);
   t->meta[st].u.strct.inline_variant_idx = 0xFFFFu;
   t->meta[st].u.strct.reserve_unknown_field_off = 0xFFFFFFFFu;
-  t->meta[st].u.strct.ptr_hops = 0;
+  t->meta[st].u.strct.ptr_hops =
+      (t->n_hops > t->hop_base[st]) ? (uintptr_t)&t->hops[t->hop_base[st]] : 0;
 }
 
 /* ---- poly tables ---- */

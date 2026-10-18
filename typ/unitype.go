@@ -136,6 +136,13 @@ type PtrHop struct {
 	// PointeeType is what the pointer points at, needed to allocate a pointee
 	// that is nil when a promoted field is being written.
 	PointeeType *UniType
+
+	// Unsettable marks a slot encoding/json cannot store an allocation into:
+	// an embedded pointer field that is unexported. Decoding a key that
+	// reaches a promoted field across a nil one of these reports an error
+	// rather than writing through it; a set pointer or an absent key decodes
+	// as usual. Encoding never allocates, so it ignores the flag.
+	Unsettable bool
 }
 
 // StructTypeInfo describes a struct.

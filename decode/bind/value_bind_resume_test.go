@@ -51,20 +51,20 @@ func TestUnmarshalValuePtrFieldResume(t *testing.T) {
 	}
 }
 
-// hopLeaf is the pointee of an embedded pointer; each fresh host
+// HopLeaf is the pointee of an embedded pointer; each fresh host
 // allocates one through the hop's SlotClass.
-type hopLeaf struct {
+type HopLeaf struct {
 	X int    `json:"x"`
 	S string `json:"s"`
 }
 
 type viaPtrHost struct {
-	*hopLeaf
+	*HopLeaf
 	Greet string `json:"greet"`
 }
 
 // TestUnmarshalValueViaPtrHopResume forces the BLOCK_FULL resume at phase
-// BIND_PHASE_TAPE_BIND_OBJECT_FIELD_VALUE. The hopLeaf pointee class starts
+// BIND_PHASE_TAPE_BIND_OBJECT_FIELD_VALUE. The HopLeaf pointee class starts
 // with a bump block and its cursor persists across parses on one Parser, so
 // a later round's hop resolution yields mid-field; the resume restores the
 // stashed field and replays the hops from hop zero.
@@ -83,7 +83,7 @@ func TestUnmarshalValueViaPtrHopResume(t *testing.T) {
 		if err := p.UnmarshalValue(val, &h); err != nil {
 			t.Fatalf("round %d: UnmarshalValue: %v", i, err)
 		}
-		if h.hopLeaf == nil || h.X != 7 || h.S != "seven" || h.Greet != "hi" {
+		if h.HopLeaf == nil || h.X != 7 || h.S != "seven" || h.Greet != "hi" {
 			t.Fatalf("round %d: host = %+v", i, h)
 		}
 	}

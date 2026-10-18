@@ -501,29 +501,38 @@ func (c *binder) bindStruct(s text, p int, dst unsafe.Pointer, ti uint32) (int, 
 // bindField binds the value at the cursor into host field f, crossing its
 // embedded pointers and reading `,string`.
 func (c *binder) bindField(host unsafe.Pointer, hostTi uint32, f *vbind.BindField) error {
+	var err error
 	base := host
 	if vbind.FieldViaPtr(f) {
-		base = c.resolveHops(host, hostTi, f)
+		base, err = c.resolveHops(host, hostTi, f)
+		if err != nil {
+			return err
+		}
 	}
 	ti := f.FieldTypeIndex(&c.tt.Types[0])
-	var err error
 	c.p, err = c.bindValue(c.txt, c.p, unsafe.Add(base, f.Offset), ti, hostTi, siteField, f.Flags&uint32(vbind.TagQuoted) != 0)
 	return err
 }
 
 // resolveHops crosses a promoted field's embedded pointers, allocating each
 // nil one, even for a null value: null belongs to the field, not its host.
-func (c *binder) resolveHops(host unsafe.Pointer, hostTi uint32, f *vbind.BindField) unsafe.Pointer {
+// A nil slot for an unexported embedded pointer field is an error rather than
+// an allocation, matching the encoding/json rule that reflect cannot store
+// into that slot.
+func (c *binder) resolveHops(host unsafe.Pointer, hostTi uint32, f *vbind.BindField) (unsafe.Pointer, error) {
 	hops := c.tt.TypeMeta[hostTi].StructMeta().PtrHops
 	for i := uintptr(vbind.FieldHopStart(f)); ; i++ {
 		h := (*vbind.BindPtrHop)(unsafe.Add(hops, i*unsafe.Sizeof(vbind.BindPtrHop{})))
 		slot := (*unsafe.Pointer)(unsafe.Add(host, h.SlotOffset))
 		if *slot == nil {
+			if h.Unsettable() {
+				return nil, c.failType(ndec.BindErrUnsettableEmbed, c.pos(), hostTi)
+			}
 			*slot = c.carve(h.SlotClass())
 		}
 		host = *slot
 		if h.IsLast() {
-			return host
+			return host, nil
 		}
 	}
 }

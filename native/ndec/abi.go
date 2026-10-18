@@ -504,6 +504,12 @@ const (
 	// variant.
 	BindErrKindofColdCase  uint32 = 39
 	BindErrVariantColdCase uint32 = 40
+
+	// BindErrUnsettableEmbed reports a promoted field reached across a nil
+	// embedded pointer field that is unexported: encoding/json refuses to
+	// store the allocation into that slot, so the bind errors rather than
+	// writing through it.
+	BindErrUnsettableEmbed uint32 = 41
 )
 
 // BindMachineSize is the shared allocation limit for the complete native

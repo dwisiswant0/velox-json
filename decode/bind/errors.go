@@ -41,6 +41,10 @@ func (e *TapeBindUnsupportedError) Error() string {
 // source immutability and reuse restrictions into the output.
 var ErrZeroCopyValue = errors.New("vjson: cannot bind a zero-copy Value; re-parse without vopt.ZeroCopy(true)")
 
+// errUnsettableEmbed is the UnmarshalTypeError payload reason for a promoted
+// field reached across a nil embedded pointer field that is unexported.
+var errUnsettableEmbed = errors.New("cannot set embedded pointer to unexported struct type")
+
 // ErrZeroCopyTypedTree reports that an explicit ZeroCopy(true) demand hit
 // a destination tree carrying value.Value or poly fields. Their content flows
 // through the tape machinery, which stays arena-backed, so zero-copy binds
@@ -179,6 +183,22 @@ func mkBindErr(p *Parser, e bindErrInfo, src []byte, srcBase uint64, valueRooted
 			rt = p.tt.ReflectTypes[idx]
 		}
 		return &UnmarshalTypeError{Value: "unknown_field", Type: rt, Offset: int64(pos)}
+	case ndec.BindErrUnsettableEmbed:
+		// The type index names the struct hosting the embedded pointer.
+		var rt reflect.Type
+		if idx := e.TypeIdx; idx >= 0 && idx < len(p.tt.ReflectTypes) {
+			rt = p.tt.ReflectTypes[idx]
+		}
+		value := "json"
+		if hasPos {
+			value = jsonValueName(src, pos, srcBase)
+		}
+		return &UnmarshalTypeError{
+			Value:  value,
+			Type:   rt,
+			Offset: int64(pos),
+			Err:    errUnsettableEmbed,
+		}
 	case ndec.BindErrUnsupportedTag:
 		return jerr.NewSyntaxError("bind: unsupported target type on this bind path", int(pos))
 	case ndec.BindErrVariantUnknownDisc, ndec.BindErrVariantMissingDisc:

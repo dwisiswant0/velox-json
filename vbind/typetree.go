@@ -380,15 +380,23 @@ type StructMetaPayload struct {
 // the field carries only its start index.
 type BindPtrHop struct {
 	SlotOffset uint32 // off 0  pointer word, relative to the previous hop's base
-	AllocClass int32  // off 4  SlotClass for the pointee; sign bit carries Last
+	AllocClass int32  // off 4  SlotClass for the pointee; sign bit carries Last, bit 30 Unsettable
 }
 
 // ptrHopLastBit marks the end of a field's hop run. It rides in the AllocClass
 // sign bit so the record stays 8 bytes; a SlotClass index is always positive.
 const ptrHopLastBit = int32(-1) << 31
 
+// ptrHopUnsettableBit marks a slot native must not allocate: an embedded
+// pointer field that is unexported, which reflect cannot store into and
+// encoding/json reports as an error when a promoted key reaches a nil one.
+const ptrHopUnsettableBit = int32(1) << 30
+
 func (h *BindPtrHop) IsLast() bool     { return h.AllocClass&ptrHopLastBit != 0 }
-func (h *BindPtrHop) SlotClass() int32 { return h.AllocClass & ^ptrHopLastBit }
+func (h *BindPtrHop) Unsettable() bool { return h.AllocClass&ptrHopUnsettableBit != 0 }
+func (h *BindPtrHop) SlotClass() int32 {
+	return h.AllocClass &^ (ptrHopLastBit | ptrHopUnsettableBit)
+}
 
 // ElemRType and EmptySliceData have process lifetime owners. The payload remains
 // noscan despite the unsafe.Pointer view. AllocClass names a SlotClass dedicated
