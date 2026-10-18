@@ -124,6 +124,7 @@ type mcQuoted struct {
 	W uint16  `json:"w,string"`
 	X uint32  `json:"x,string"`
 	Y uint64  `json:"y,string"`
+	Z uintptr `json:"z,string"`
 	F float32 `json:"f,string"`
 	G float64 `json:"g,string"`
 	S string  `json:"s,string"`
@@ -187,6 +188,7 @@ func TestMarshalCorpus_Scalars(t *testing.T) {
 		mc("uint16", uint16(math.MaxUint16)),
 		mc("uint32", uint32(math.MaxUint32)),
 		mc("uint64", uint64(math.MaxUint64)),
+		mc("uintptr", uintptr(9)),
 		mc("float32", float32(0.5)),
 		mc("float32 exponent", float32(1e-7)),
 		mc("float64", 1.5e3),
@@ -206,7 +208,7 @@ func TestMarshalCorpus_Composites(t *testing.T) {
 	n := 9
 	quoted := mcQuoted{
 		B: true, I: math.MinInt8, J: math.MinInt16, K: math.MinInt32, L: math.MinInt64,
-		U: 7, V: math.MaxUint8, W: math.MaxUint16, X: math.MaxUint32, Y: math.MaxUint64,
+		U: 7, V: math.MaxUint8, W: math.MaxUint16, X: math.MaxUint32, Y: math.MaxUint64, Z: 9,
 		F: 0.5, G: 1.5e3, S: "h\"i", P: &n,
 	}
 	for _, c := range []marshalCase{

@@ -272,6 +272,8 @@ func KindForType(t reflect.Type) ElemTypeKind {
 		return KindUint32
 	case reflect.Uint64:
 		return KindUint64
+	case reflect.Uintptr:
+		return KindUint64
 	case reflect.Float32:
 		return KindFloat32
 	case reflect.Float64:

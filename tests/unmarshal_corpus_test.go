@@ -123,6 +123,10 @@ type cpInts struct {
 	U32 uint32 `json:"u32"`
 }
 
+type cpUintptr struct {
+	P uintptr `json:"p"`
+}
+
 type cpFloats struct {
 	F32 float32 `json:"f32"`
 	F64 float64 `json:"f64"`
@@ -275,6 +279,10 @@ func TestUnmarshalCorpus_Integers(t *testing.T) {
 		{"bare minus", `{"i":-}`, newOf[cpInts](), true},
 		{"plus sign", `{"i":+1}`, newOf[cpInts](), true},
 		{"root int", `42`, newOf[int](), true},
+		{"uintptr", `{"p":5}`, newOf[cpUintptr](), true},
+		{"uintptr negative", `{"p":-1}`, newOf[cpUintptr](), true},
+		{"uintptr overflow", `{"p":18446744073709551616}`, newOf[cpUintptr](), true},
+		{"root uintptr", `5`, newOf[uintptr](), true},
 	}
 	for _, c := range cases {
 		assertParity(t, c)
