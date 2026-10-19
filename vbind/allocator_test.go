@@ -953,6 +953,73 @@ func TestServeSliceGrowKeepsCallerBacking(t *testing.T) {
 	}
 }
 
+// A pointerless element keeps the scalar's alignment, so a spare of odd
+// capacity is not word sized and must clear without the barrier. A length
+// prediction retires such a spare: the grow that follows it takes the spare
+// and moves the slice onto a backing of the predicted size.
+func TestServeSliceGrowRetiresOddPointerlessBacking(t *testing.T) {
+	a := NewAllocator(makeTreeForOddScalarGrow(t))
+	sc := &a.Slots[0]
+
+	// A prediction of 129 sizes the retired backing to 516 bytes, 4 past a
+	// whole word.
+	sc.LenHint = 129
+	called := make([]float32, 65)
+	calledHdr := gort.SliceHeader{Data: unsafe.Pointer(&called[0]), Len: 65, Cap: 65}
+	if err := a.ServeSliceGrow(sc, &calledHdr); err != nil {
+		t.Fatalf("grow err: %v", err)
+	}
+	if calledHdr.Cap != 129 {
+		t.Fatalf("Cap = %d, want the 129-element prediction", calledHdr.Cap)
+	}
+
+	// Adopt the spare, then grow again with the same prediction: the layer
+	// below retires the slice, and that backing is the 129-element one.
+	sc.LenHint = 129
+	adopting := make([]float32, 65)
+	adoptHdr := gort.SliceHeader{Data: unsafe.Pointer(&adopting[0]), Len: 65, Cap: 65}
+	if err := a.ServeSliceGrow(sc, &adoptHdr); err != nil {
+		t.Fatalf("grow err: %v", err)
+	}
+	if adoptHdr.Cap != 129 {
+		t.Fatalf("Cap = %d, want the spare at its 129 elements", adoptHdr.Cap)
+	}
+	sc.LenHint = 129
+	adoptHdr.Len = adoptHdr.Cap
+	if err := a.ServeSliceGrow(sc, &adoptHdr); err != nil {
+		t.Fatalf("grow err: %v", err)
+	}
+	for _, s := range a.spares {
+		if s.cap == 129 {
+			return
+		}
+	}
+	t.Fatalf("spares = %+v, want the retired 129-element backing", a.spares)
+}
+
+// makeTreeForOddScalarGrow builds a slice of a 4-byte pointerless scalar, the
+// one element geometry whose capacity can miss the word grid.
+func makeTreeForOddScalarGrow(t *testing.T) *TypeTree {
+	t.Helper()
+	ety := gort.TypePtr(reflect.TypeFor[float32]())
+	bt := BindType{Kind: KindSlice}
+	bt.Slice().ChildSize = 4
+	meta := TypeMeta{Size: 4}
+	sm := meta.SliceMeta()
+	sm.ElemRType = ety
+	sm.AllocClass = 0
+	return &TypeTree{
+		Types:    []BindType{bt},
+		TypeMeta: []TypeMeta{meta},
+		Slots: []SlotTemplate{{
+			Batch:    4,
+			ElemSize: 4,
+			RType:    ety,
+			Flags:    SlotNoPtr,
+		}},
+	}
+}
+
 // A commit must retire BorrowStart. A block left exactly exhausted at rest
 // has Offset == Limit just like a live borrow, so a rebind of the last
 // borrower's backing (repeated key, reused destination) would match a stale

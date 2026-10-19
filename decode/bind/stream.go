@@ -246,7 +246,7 @@ func (d *streamScopeDriver) GrowBatch(reuse bool) error {
 	if reuse {
 		// The reused backing starts zero, like a fresh one: an element
 		// omitting a field must not keep the previous batch's value.
-		gort.MemclrHasPointers(hdr.Data, uintptr(sc.Cap)*uintptr(sc.ElemSize))
+		sc.ClearBacking(hdr.Data, uintptr(sc.Cap)*uintptr(sc.ElemSize))
 	} else {
 		hdr.Data = gort.UnsafeNewArray(sc.RType, int(sc.Cap))
 		hdr.Cap = int(sc.Cap)

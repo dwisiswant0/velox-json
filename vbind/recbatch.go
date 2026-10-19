@@ -166,7 +166,7 @@ func (r *RecBatchSlotClass) free(ptr unsafe.Pointer, cap uint32) {
 	i := uint32(offset / slotBytes)
 	row.Bitmap |= 1 << i
 	row.FreeCount++
-	gort.MemclrHasPointers(ptr, slotBytes)
+	(*SlotClass)(unsafe.Pointer(r)).ClearBacking(ptr, slotBytes)
 }
 
 // ServeRefill replaces an empty row and moves hdr into one fresh slot. refillRow

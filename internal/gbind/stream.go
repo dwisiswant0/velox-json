@@ -8,6 +8,7 @@ import (
 
 	"github.com/velox-io/json/gort"
 	"github.com/velox-io/json/stream"
+	"github.com/velox-io/json/vbind"
 )
 
 // A stream handler pulls its array: every Iter step asks the driver for the
@@ -29,6 +30,7 @@ type streamDriver struct {
 	elemRT        unsafe.Pointer
 	esz           uintptr
 	batch         int
+	sc            *vbind.SlotClass
 	elemHasStream bool
 	retainMark    int // allocator retention height at activation
 
@@ -118,7 +120,7 @@ func (d *streamDriver) PeekAnyBreak() *stream.BreakSignal { return d.c.host.Peek
 func (d *streamDriver) GrowBatch(reuse bool) error {
 	if reuse {
 		// The reused backing starts zero, like a fresh one.
-		gort.MemclrHasPointers(d.hdr.Data, uintptr(d.batch)*d.esz)
+		d.sc.ClearBacking(d.hdr.Data, uintptr(d.batch)*d.esz)
 	} else {
 		d.hdr.Data = gort.UnsafeNewArray(d.elemRT, d.batch)
 		d.hdr.Cap = d.batch
@@ -159,6 +161,7 @@ func (c *binder) bindStream(dst unsafe.Pointer, ti uint32) error {
 		elemRT:        sm.ElemRType,
 		esz:           uintptr(bt.Slice().ChildSize),
 		batch:         int(c.tt.Slots[sm.AllocClass].Batch),
+		sc:            &c.a.Slots[sm.AllocClass],
 		elemHasStream: bt.HasElemHasStream(),
 		retainMark:    c.a.RetainMark(),
 	}

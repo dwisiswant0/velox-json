@@ -576,9 +576,18 @@ func (c *binder) emptyArray(dst unsafe.Pointer, ti uint32) {
 // encoding/json.
 func (c *binder) zeroArrayTail(dst unsafe.Pointer, ti uint32, count int) {
 	off := uintptr(count) * uintptr(c.typ(ti).Array().ChildSize)
-	if size := c.size(ti); off < size {
-		gort.MemclrHasPointers(unsafe.Add(dst, off), size-off)
+	size := c.size(ti)
+	if off >= size {
+		return
 	}
+	// A pointerless element keeps its own alignment, so a tail that starts on
+	// an element boundary can miss the word grid. Only a pointer-bearing type
+	// needs the barrier, and its elements are word sized.
+	if !c.pl.ptrs[c.child(ti)] {
+		gort.MemclrNoHeapPointers(unsafe.Add(dst, off), size-off)
+		return
+	}
+	gort.MemclrHasPointers(unsafe.Add(dst, off), size-off)
 }
 
 // arrayElems binds the elements of a non-empty array whose frame is pushed,

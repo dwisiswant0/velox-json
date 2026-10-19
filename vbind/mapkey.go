@@ -106,14 +106,25 @@ func (info *MapDrainInfo) AssignKey(m unsafe.Pointer, key string, ks *KeyScratch
 func (info *MapDrainInfo) assignTextKey(m unsafe.Pointer, key string, ks *KeyScratch) (unsafe.Pointer, error) {
 	k := ks.textKey(info.KeyRType)
 	size := uintptr(info.KeySize)
-	gort.MemclrHasPointers(k, size)
+	clearTyped(k, size)
 	err := info.KeyText(k, unsafe.Slice(unsafe.StringData(key), len(key)))
 	var slot unsafe.Pointer
 	if err == nil {
 		slot = gort.MapAssign(info.MapRType, m, k)
 	}
-	gort.MemclrHasPointers(k, size)
+	clearTyped(k, size)
 	return slot, err
+}
+
+// clearTyped zeroes one key-sized value. A type that can hold a pointer is word
+// sized, so only a pointerless key lands off the word grid; that one has no
+// pointer to publish and clears without the barrier.
+func clearTyped(p unsafe.Pointer, size uintptr) {
+	if size%unsafe.Sizeof(uintptr(0)) != 0 {
+		gort.MemclrNoHeapPointers(p, size)
+		return
+	}
+	gort.MemclrHasPointers(p, size)
 }
 
 func (info *MapDrainInfo) keyTypeError(value string, err error) error {

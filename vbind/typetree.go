@@ -704,6 +704,13 @@ const (
 	// allocator detaches them on a document-byte budget rather than the fixed
 	// release cadence every other recursive class follows.
 	SlotAnyGroup
+
+	// SlotNoPtr marks a class whose elements hold no GC pointers, so its
+	// backings clear without the write barrier. The pointer-aware clear needs
+	// a word-sized span: a pointer-carrying element is word sized, but a
+	// pointerless scalar keeps its own alignment, and a 4-byte class with an
+	// odd capacity spans a byte count off the word grid.
+	SlotNoPtr
 )
 
 // Scannable TypeTree slices keep builder owned arrays and variant lookup blobs

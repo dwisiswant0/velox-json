@@ -821,10 +821,22 @@ func (b *builder) registerSlotClass(elem *typ.UniType) uint32 {
 		Batch:    4,
 		ElemSize: uint32(elem.Size),
 		RType:    elem.Ptr,
+		Flags:    slotFlagsFor(elem),
 	})
 	b.bySlot[elem] = idx
 	b.slotRecs = append(b.slotRecs, slotRec{kind: slotPointer, roots: []*typ.UniType{elem}})
 	return idx
+}
+
+// slotFlagsFor records the one static property the clearing sites need: whether
+// an element of this class can hold a GC pointer. A pointerless class keeps its
+// element alignment, which for a 4-byte scalar leaves a byte count off the word
+// grid, so its backings clear without the write barrier.
+func slotFlagsFor(elem *typ.UniType) SlotFlag {
+	if elem.Type != nil && !typ.TypeContainsPointer(elem.Type) {
+		return SlotNoPtr
+	}
+	return 0
 }
 
 // Slice, pointer, and stream storage use distinct SlotClasses because they have
@@ -843,6 +855,7 @@ func (b *builder) registerSliceSlotClass(elem *typ.UniType, isStream bool, elemH
 		Batch:    4,
 		ElemSize: uint32(elem.Size),
 		RType:    elem.Ptr,
+		Flags:    slotFlagsFor(elem),
 	}
 	if isStream {
 		tpl.IsStream = true

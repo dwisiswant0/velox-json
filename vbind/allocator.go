@@ -774,9 +774,8 @@ func (a *Allocator) takeSpare(sc *SlotClass, n int) (unsafe.Pointer, int) {
 // retireLoose recycles data after its only slice moved off it. A grow is the
 // sole event that abandons a standalone backing: the copy leaves no element
 // behind, deferred records were flushed before the grow yield, and a closed
-// map region keeps its hmap rather than its parent slot. Clearing through the
-// pointer-aware path both zeroes the array for its next slice and drops its
-// stale pointers from GC tracing.
+// map region keeps its hmap rather than its parent slot. Clearing zeroes the
+// array for its next slice and drops any stale pointer from GC tracing.
 func (a *Allocator) retireLoose(sc *SlotClass, data unsafe.Pointer, n int) {
 	if data == nil {
 		return
@@ -793,11 +792,23 @@ func (a *Allocator) retireLoose(sc *SlotClass, data unsafe.Pointer, n int) {
 		if a.spareBytes+bytes > spareMaxBytes {
 			return
 		}
-		gort.MemclrHasPointers(data, uintptr(bytes))
+		sc.ClearBacking(data, uintptr(bytes))
 		a.spares = append(a.spares, looseBacking{sc: sc, data: data, cap: n})
 		a.spareBytes += bytes
 		return
 	}
+}
+
+// ClearBacking zeroes n bytes of a backing of this class. A pointerless class
+// keeps its element alignment, which for a 4-byte scalar puts an odd element
+// count off the word grid, so it clears without the barrier; a pointer-bearing
+// type is word sized by construction.
+func (sc *SlotClass) ClearBacking(data unsafe.Pointer, n uintptr) {
+	if sc.Flags&SlotNoPtr != 0 {
+		gort.MemclrNoHeapPointers(data, n)
+		return
+	}
+	gort.MemclrHasPointers(data, n)
 }
 
 // EnsureStrArena preserves its monotonic cursor across parses. Published Value
