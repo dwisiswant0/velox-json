@@ -14,12 +14,21 @@ import (
 // oldValue is a pointee a target field holds before the decode overwrites it.
 type oldValue struct{ N [8]int }
 
+// nestedValue is a value struct whose fields Unmarshal overwrites.
+type nestedValue struct {
+	S string
+	P *oldValue
+}
+
 // overwriteTarget is what Unmarshal decodes into.
 type overwriteTarget struct {
 	S  string               `json:"s"`
 	P  *oldValue            `json:"p"`
 	PP **oldValue           `json:"pp"`
 	M  map[string]*oldValue `json:"m"`
+	I  any                  `json:"i"`
+	ST nestedValue          `json:"st"`
+	AR [2]*oldValue         `json:"ar"`
 }
 
 // chainNode links a target behind a long chain, so mark reaches it last.
@@ -76,6 +85,47 @@ func TestUnmarshalOverrideNonNilGC(t *testing.T) {
 			doc:       `{"m":{"k":{"N":[1]}}}`,
 			newTarget: func() *overwriteTarget { return &overwriteTarget{M: map[string]*oldValue{"k": {}}} },
 			pin:       func(v *overwriteTarget) unsafe.Pointer { return unsafe.Pointer(vjson.Pin(v.M["k"])) },
+		},
+		{
+			// Null clears the map header itself, dropping the hmap rather
+			// than a value inside it.
+			name:      "map",
+			doc:       `{"m":null}`,
+			newTarget: func() *overwriteTarget { return &overwriteTarget{M: map[string]*oldValue{"k": {}}} },
+			pin: func(v *overwriteTarget) unsafe.Pointer {
+				m := vjson.Pin(v.M)
+				return *(*unsafe.Pointer)(unsafe.Pointer(&m))
+			},
+		},
+		{
+			// Null clears the interface, dropping the boxed pointer.
+			name:      "interface",
+			doc:       `{"i":null}`,
+			newTarget: func() *overwriteTarget { return &overwriteTarget{I: &oldValue{}} },
+			pin:       func(v *overwriteTarget) unsafe.Pointer { return unsafe.Pointer(vjson.Pin(v.I).(*oldValue)) },
+		},
+		{
+			// A value struct is overwritten field by field, so pinning it
+			// must shade every pointer word the copy holds. The kept word
+			// sits at a nonzero field offset.
+			name: "struct",
+			doc:  `{"st":{"S":"new","P":null}}`,
+			newTarget: func() *overwriteTarget {
+				return &overwriteTarget{ST: nestedValue{S: strings.Repeat("o", 256), P: &oldValue{}}}
+			},
+			pin: func(v *overwriteTarget) unsafe.Pointer {
+				return unsafe.Pointer(vjson.Pin(v.ST).P)
+			},
+		},
+		{
+			// Null clears each non-nil element, dropping both pointers. The
+			// kept word is the second element, so the stride is asserted.
+			name:      "array",
+			doc:       `{"ar":[null,null]}`,
+			newTarget: func() *overwriteTarget { return &overwriteTarget{AR: [2]*oldValue{{}, {}}} },
+			pin: func(v *overwriteTarget) unsafe.Pointer {
+				return unsafe.Pointer(vjson.Pin(v.AR)[1])
+			},
 		},
 		{
 			// Null clears the outermost slot, dropping the box and, through
