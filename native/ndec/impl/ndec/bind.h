@@ -1448,8 +1448,12 @@ array_continue: {
   }
   if (ch == ']') {
     /* Yield the final stream batch once, then resume inside array_close so the
-     * handler cannot run twice. */
+     * handler cannot run twice. An element publishes the parent's live count
+     * only when its body pushes a frame, so a scalar or an empty object leaves
+     * the header at the previous count. Publish the final count here, before
+     * the handler reads the batch. */
     if (cur_type.kind == BIND_KIND_STREAM && !(cur_type.flags & BIND_FLAG_STREAM_SKIP)) {
+      *(intptr_t *)(cur_dst + 8) = (intptr_t)cur_count;
       BIND_YIELD(m, BIND_YIELD_SLICE_GROW, (uint32_t)cur_type.type_idx, 0, BIND_PHASE_ARRAY_CLOSE);
     }
   array_close: {
