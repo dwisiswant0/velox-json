@@ -6,18 +6,19 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"unsafe"
 
 	vjson "github.com/velox-io/json"
 )
 
 // oldValue is a pointee a target field holds before the decode overwrites it.
-type oldValue struct{ N [8]int }
+type oldValue struct {
+	N [8]int `json:"N"`
+}
 
 // nestedValue is a value struct whose fields Unmarshal overwrites.
 type nestedValue struct {
-	S string
-	P *oldValue
+	S string    `json:"S"`
+	P *oldValue `json:"P"`
 }
 
 // overwriteTarget is what Unmarshal decodes into.
@@ -52,152 +53,148 @@ func chainTail(head *chainNode) *overwriteTarget {
 	return head.target
 }
 
-type overwriteCase struct {
+// overwriteDecoder is a decoder a case runs against, instantiated for the
+// type of copy that case keeps. pin shades that copy: std's stores go
+// through the barrier and shade it themselves, so std passes the copy
+// through, while vjson's stores skip the barrier and leave the shading to
+// the caller, the contract vjson.Pin documents.
+type overwriteDecoder[T any] struct {
 	name      string
-	doc       string                                // overwrites the field holding the old value
-	newTarget func() *overwriteTarget               // target whose field holds a fresh old value
-	pin       func(*overwriteTarget) unsafe.Pointer // copies the field's old value out, pins it, returns the word the caller keeps
+	unmarshal func(data []byte, v *overwriteTarget) error
+	keep      func(T) T
+}
+
+// noPin is the shading of a decoder whose own stores already shade.
+func noPin[T any](x T) T { return x }
+
+// overwriteDecodersFor builds the decoder set per instantiation: pin is
+// generic in the copy's type, so no single value can carry it for every case.
+func overwriteDecodersFor[T pinnedRef]() []overwriteDecoder[T] {
+	return []overwriteDecoder[T]{
+		{"vjson", func(d []byte, v *overwriteTarget) error { return vjson.Unmarshal(d, v) }, vjson.Pin[T]},
+		{"std", func(d []byte, v *overwriteTarget) error { return json.Unmarshal(d, v) }, noPin[T]},
+	}
+}
+
+// pinnedRef is the copy of a field's old value a case keeps. The copy sits in
+// a stack slot mark already scanned, so it must stay a word the GC scans:
+// every term is pointer shaped and shares one stencil.
+type pinnedRef interface {
+	// oldValue | *oldValue | **oldValue | nestedValue | [2]*oldValue | map[string]*oldValue | any
+	any
+}
+
+// runOverrideGC runs one case against every decoder: ref copies a field's old
+// value out, the decode overwrites the field, and the next cycle must still
+// reach the old value through the copy.
+func runOverrideGC[T pinnedRef](t *testing.T, name, doc string, newTarget func() *overwriteTarget, ref func(*overwriteTarget) T) {
+	t.Helper()
+	for _, dec := range overwriteDecodersFor[T]() {
+		t.Run(dec.name+"/"+name, func(t *testing.T) {
+			for range 30 {
+				// The old value is reachable only through the target's
+				// field, and the target only through the chain tail.
+				chain := newChainToTarget(newTarget(), 1_000_000)
+
+				// Start a gc cycle. Mark scans root stacks before heap
+				// objects, so this parked stack is scanned now: it holds
+				// the chain head, with the target at the far end.
+				done := make(chan struct{})
+				go func() { runtime.GC(); close(done) }()
+
+				// Leave a window for the GC's mark phase to scan stacks first,
+				// then heaps: prevent the root scan from covering old, copied
+				// after this park. One millisecond spans the scan and leaves
+				// mark mid-chain.
+				time.Sleep(time.Millisecond)
+
+				// Reach the tail before mark does. Mark walks the same
+				// chain node by node but pays per-node scan work, so this
+				// load loop gets there first and the copy below runs
+				// before mark reads the field.
+				target := chainTail(chain)
+
+				// Stacks are scanned once per cycle, so this copy is
+				// invisible to the running cycle. The target's field is
+				// now the only path to the old value that mark can still
+				// follow. A decoder whose stores skip the barrier leaves
+				// the shading to the caller.
+				old := dec.keep(ref(target))
+
+				// The overwrite cuts that path (ref)
+				if err := dec.unmarshal([]byte(doc), target); err != nil {
+					t.Fatal(err)
+				}
+				<-done
+
+				// The next cycle reaches the freed old value through var 'old'
+				// and throws "found pointer to free object".
+				runtime.GC()
+				runtime.KeepAlive(old) // use old
+			}
+		})
+	}
 }
 
 // TestUnmarshalOverrideNonNilGC: a caller copies a field's old value to its
 // stack, then Unmarshal overwrites the field. When the copy lands after mark
 // scanned that stack, the field is the only path to the old value that mark
-// still follows, so the overwrite must shade the old value, as a Go store's
-// write barrier does. std is the control: its stores go through the barrier.
+// still follows, so the old value must be shaded before the overwrite, as a
+// Go store's write barrier shades it. std is the control: its stores carry
+// the barrier, so its copy needs nothing. vjson's stores skip it, so the
+// copy is shaded by vjson.Pin, the contract a caller holding a value across
+// an Unmarshal relies on.
 func TestUnmarshalOverrideNonNilGC(t *testing.T) {
-	cases := []overwriteCase{
-		{
-			name:      "string",
-			doc:       `{"s":"new"}`,
-			newTarget: func() *overwriteTarget { return &overwriteTarget{S: strings.Repeat("o", 256)} },
-			pin: func(v *overwriteTarget) unsafe.Pointer {
-				return unsafe.Pointer(unsafe.StringData(vjson.Pin(v.S)))
-			},
-		},
-		{
-			name:      "pointer",
-			doc:       `{"p":null}`,
-			newTarget: func() *overwriteTarget { return &overwriteTarget{P: &oldValue{}} },
-			pin:       func(v *overwriteTarget) unsafe.Pointer { return unsafe.Pointer(vjson.Pin(v.P)) },
-		},
-		{
-			name:      "map value",
-			doc:       `{"m":{"k":{"N":[1]}}}`,
-			newTarget: func() *overwriteTarget { return &overwriteTarget{M: map[string]*oldValue{"k": {}}} },
-			pin:       func(v *overwriteTarget) unsafe.Pointer { return unsafe.Pointer(vjson.Pin(v.M["k"])) },
-		},
-		{
-			// Null clears the map header itself, dropping the hmap rather
-			// than a value inside it.
-			name:      "map",
-			doc:       `{"m":null}`,
-			newTarget: func() *overwriteTarget { return &overwriteTarget{M: map[string]*oldValue{"k": {}}} },
-			pin: func(v *overwriteTarget) unsafe.Pointer {
-				m := vjson.Pin(v.M)
-				return *(*unsafe.Pointer)(unsafe.Pointer(&m))
-			},
-		},
-		{
-			// Null clears the interface, dropping the boxed pointer.
-			name:      "interface",
-			doc:       `{"i":null}`,
-			newTarget: func() *overwriteTarget { return &overwriteTarget{I: &oldValue{}} },
-			pin:       func(v *overwriteTarget) unsafe.Pointer { return unsafe.Pointer(vjson.Pin(v.I).(*oldValue)) },
-		},
-		{
-			// A value struct is overwritten field by field, so pinning it
-			// must shade every pointer word the copy holds. The kept word
-			// sits at a nonzero field offset.
-			name: "struct",
-			doc:  `{"st":{"S":"new","P":null}}`,
-			newTarget: func() *overwriteTarget {
-				return &overwriteTarget{ST: nestedValue{S: strings.Repeat("o", 256), P: &oldValue{}}}
-			},
-			pin: func(v *overwriteTarget) unsafe.Pointer {
-				return unsafe.Pointer(vjson.Pin(v.ST).P)
-			},
-		},
-		{
-			// Null clears each non-nil element, dropping both pointers. The
-			// kept word is the second element, so the stride is asserted.
-			name:      "array",
-			doc:       `{"ar":[null,null]}`,
-			newTarget: func() *overwriteTarget { return &overwriteTarget{AR: [2]*oldValue{{}, {}}} },
-			pin: func(v *overwriteTarget) unsafe.Pointer {
-				return unsafe.Pointer(vjson.Pin(v.AR)[1])
-			},
-		},
-		{
-			// Null clears the outermost slot, dropping the box and, through
-			// it, the leaf, both without a barrier.
-			name: "double pointer",
-			doc:  `{"pp":null}`,
-			newTarget: func() *overwriteTarget {
-				leaf := &oldValue{}
-				return &overwriteTarget{PP: &leaf}
-			},
-			pin: func(v *overwriteTarget) unsafe.Pointer { return unsafe.Pointer(vjson.Pin(v.PP)) },
-		},
-		{
-			// A value with a nil leaf replaces the leaf pointer slot inside
-			// the box, the multi-level fill path.
-			name:      "double pointer fill",
-			doc:       `{"pp":{"N":[1]}}`,
-			newTarget: func() *overwriteTarget { var leaf *oldValue; return &overwriteTarget{PP: &leaf} },
-			pin:       func(v *overwriteTarget) unsafe.Pointer { return unsafe.Pointer(vjson.Pin(v.PP)) },
-		},
-	}
-	decoders := []struct {
-		name string
-		fn   func(data []byte, v *overwriteTarget) error
-	}{
-		{"std", func(d []byte, v *overwriteTarget) error { return json.Unmarshal(d, v) }},
-		{"vjson", func(d []byte, v *overwriteTarget) error { return vjson.Unmarshal(d, v) }},
-	}
-	for _, dec := range decoders {
-		for _, c := range cases {
-			t.Run(dec.name+"/"+c.name, func(t *testing.T) {
-				for range 30 {
-					// The old value is reachable only through the target's
-					// field, and the target only through the chain tail.
-					chain := newChainToTarget(c.newTarget(), 1_000_000)
+	runOverrideGC(t, "string", `{"s":"new"}`,
+		func() *overwriteTarget { return &overwriteTarget{S: strings.Repeat("o", 256)} },
+		func(v *overwriteTarget) string { return v.S })
 
-					// Start a cycle. Mark scans root stacks before heap
-					// objects, so this parked stack is scanned now: it holds
-					// the chain head, with the target at the far end.
-					done := make(chan struct{})
-					go func() { runtime.GC(); close(done) }()
-					time.Sleep(time.Millisecond)
+	runOverrideGC(t, "pointer", `{"p":null}`,
+		func() *overwriteTarget { return &overwriteTarget{P: &oldValue{}} },
+		func(v *overwriteTarget) *oldValue { return v.P })
 
-					// Mark is still walking the chain. A plain load loop
-					// outruns it to the target, and the old value lands on
-					// the scanned stack. The target's field stays the only
-					// path to it that mark will follow.
-					target := chainTail(chain)
+	runOverrideGC(t, "map value", `{"m":{"k":{"N":[1]}}}`,
+		func() *overwriteTarget { return &overwriteTarget{M: map[string]*oldValue{"k": {}}} },
+		func(v *overwriteTarget) *oldValue { return v.M["k"] })
 
-					// solution1: pinner
-					// var old = c.pin(target)
-					// var p runtime.Pinner
-					// p.Pin(old)
-					// defer p.Unpin()
+	// Null clears the map header itself, dropping the hmap rather
+	// than a value inside it.
+	runOverrideGC(t, "map", `{"m":null}`,
+		func() *overwriteTarget { return &overwriteTarget{M: map[string]*oldValue{"k": {}}} },
+		func(v *overwriteTarget) map[string]*oldValue { return v.M })
 
-					// solution2: explicit gc barrier
-					var old = c.pin(target)
+	// Null clears the interface, dropping the boxed pointer.
+	runOverrideGC(t, "interface", `{"i":null}`,
+		func() *overwriteTarget { return &overwriteTarget{I: &oldValue{}} },
+		func(v *overwriteTarget) any { return v.I })
 
-					// The overwrite cuts that path. A barriered store shades
-					// the old value; a raw store leaves it white, and the
-					// cycle frees it.
-					if err := dec.fn([]byte(c.doc), target); err != nil {
-						t.Fatal(err)
-					}
-					<-done
+	// A value struct is overwritten field by field, so pinning it
+	// must shade every pointer word the copy holds. The kept word
+	// sits at a nonzero field offset.
+	runOverrideGC(t, "struct", `{"st":{"S":"new","P":null}}`,
+		func() *overwriteTarget {
+			return &overwriteTarget{ST: nestedValue{S: strings.Repeat("o", 256), P: &oldValue{}}}
+		},
+		func(v *overwriteTarget) nestedValue { return v.ST })
 
-					// The next cycle reaches the freed old value through old
-					// and throws "found pointer to free object".
-					runtime.GC()
-					runtime.KeepAlive(old) //use old
-				}
-			})
-		}
-	}
+	// Null clears each non-nil element, dropping both pointers. The
+	// kept word is the second element, so the stride is asserted.
+	runOverrideGC(t, "array", `{"ar":[null,null]}`,
+		func() *overwriteTarget { return &overwriteTarget{AR: [2]*oldValue{{}, {}}} },
+		func(v *overwriteTarget) [2]*oldValue { return v.AR })
+
+	// Null clears the outermost slot, dropping the box and, through
+	// it, the leaf, both without a barrier.
+	runOverrideGC(t, "double pointer", `{"pp":null}`,
+		func() *overwriteTarget {
+			leaf := &oldValue{}
+			return &overwriteTarget{PP: &leaf}
+		},
+		func(v *overwriteTarget) **oldValue { return v.PP })
+
+	// A value with a nil leaf replaces the leaf pointer slot inside
+	// the box, the multi-level fill path.
+	runOverrideGC(t, "double pointer fill", `{"pp":{"N":[1]}}`,
+		func() *overwriteTarget { var leaf *oldValue; return &overwriteTarget{PP: &leaf} },
+		func(v *overwriteTarget) **oldValue { return v.PP })
 }
