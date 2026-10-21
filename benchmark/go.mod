@@ -7,7 +7,7 @@ require (
 	github.com/apache/fory/go/fory v1.5.0
 	github.com/bytedance/sonic v1.15.4
 	github.com/goccy/go-json v0.11.2-0.20260929041521-d7bede4aba27
-	github.com/klauspost/compress v1.18.4
+	github.com/klauspost/compress v1.20.3
 	github.com/planetscale/vtprotobuf v0.6.0
 	github.com/velox-io/json v0.0.0
 	golang.design/x/reflect v0.1.1
